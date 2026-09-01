@@ -1280,6 +1280,68 @@ function updateSun(){
 }
 var sunDir=new THREE.Vector3(0,1,0), sunDist=300, sunTargetX=0, sunTargetZ=0;
 
+/* =========================================================
+   THE SKY AS A LIGHT
+
+   Until now the machines were lit by a sun, a tint and a rim
+   light. Real metal is lit by the whole sky and reflects it,
+   and its absence is most of what reads as computer graphics.
+
+   This builds a small cube of the sky we already compute —
+   blue overhead, warm at the horizon, sand below — and hands
+   it to every material as an environment. It costs one 64px
+   render whenever the light changes materially.
+   ========================================================= */
+var envScene=new THREE.Scene();
+var envCube=new THREE.CubeCamera(0.1,100,
+  new THREE.WebGLCubeRenderTarget(64,{format:THREE.RGBAFormat,type:THREE.HalfFloatType,
+    generateMipmaps:true,minFilter:THREE.LinearMipmapLinearFilter}));
+(function(){
+  /* an inside-out box: sky above, ground below, sun a bright patch */
+  var g=new THREE.SphereGeometry(40,24,16);
+  var m=new THREE.ShaderMaterial({
+    side:THREE.BackSide, depthWrite:false,
+    uniforms:{ uTop:{value:new THREE.Color(0.10,0.22,0.45)},
+               uHor:{value:new THREE.Color(0.55,0.52,0.44)},
+               uGnd:{value:new THREE.Color(0.22,0.16,0.09)},
+               uSun:{value:new THREE.Vector3(0,1,0)},
+               uSunI:{value:1.0} },
+    vertexShader:"varying vec3 vD; void main(){ vD=normalize(position);"+
+                 " gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0); }",
+    fragmentShader:[
+      "uniform vec3 uTop,uHor,uGnd; uniform vec3 uSun; uniform float uSunI;",
+      "varying vec3 vD;",
+      "void main(){",
+      "  float y=vD.y;",
+      "  vec3 c = y>0.0 ? mix(uHor,uTop,pow(y,0.55)) : mix(uHor,uGnd,pow(-y,0.42));",
+      "  float s=max(0.0,dot(normalize(vD),normalize(uSun)));",
+      "  c += vec3(1.0,0.86,0.62)*pow(s,120.0)*6.0*uSunI;",   /* the sun itself */
+      "  c += vec3(1.0,0.80,0.55)*pow(s,6.0)*0.22*uSunI;",    /* the glow round it */
+      "  gl_FragColor=vec4(c,1.0);",
+      "}"].join("\n")
+  });
+  envScene.add(new THREE.Mesh(g,m));
+  envScene.userData.mat=m;
+})();
+var envLastAlt=999;
+function updateEnvironment(force){
+  if(!force && Math.abs(sunAlt-envLastAlt)<3.0) return;
+  envLastAlt=sunAlt;
+  var s=skyAt(sunAlt), m=envScene.userData.mat;
+  function lin(c){ return [Math.pow(c[0]/255,2.2),Math.pow(c[1]/255,2.2),Math.pow(c[2]/255,2.2)]; }
+  var t=lin(s.top), ho=lin(s.hor);
+  m.uniforms.uTop.value.setRGB(t[0],t[1],t[2]);
+  m.uniforms.uHor.value.setRGB(ho[0],ho[1],ho[2]);
+  /* the ground bounces a good deal of light back up; over sand, most of it */
+  m.uniforms.uGnd.value.setRGB(ho[0]*0.55+0.06,ho[1]*0.48+0.045,ho[2]*0.38+0.028);
+  m.uniforms.uSun.value.copy(sunDir);
+  m.uniforms.uSunI.value=Math.max(0,Math.sin(sunAlt*RAD));
+  var prev=renderer.getRenderTarget();
+  envCube.update(renderer,envScene);
+  renderer.setRenderTarget(prev);
+  scene.environment=envCube.renderTarget.texture;
+}
+
 /* ---- height lookup over the interpolated surface ---- */
 function hAt(wx,wz){
   if(!hCur) return 0;
@@ -1314,7 +1376,8 @@ function buildTerrain(){
   geo.setAttribute("normal",new THREE.BufferAttribute(nor,3));
   geo.setAttribute("color",new THREE.BufferAttribute(col,3));
   geo.setIndex(new THREE.BufferAttribute(ind,1));
-  var sandMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.96,metalness:0});
+  var sandMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.94,metalness:0});
+  sandMat.envMapIntensity=0.85;
   /* ---------------------------------------------------------
      The grid is five and a half metres across a cell, so between
      one corner and the next the ground is perfectly flat — which
@@ -1379,6 +1442,7 @@ function buildTerrain(){
   fogRef=new THREE.FogExp2(0x3d3428,1.35/(HALF*2)); scene.fog=fogRef;
   sunDist=Math.max(HALF*1.4,200);
   if(typeof updateSun==='function') updateSun();
+  if(typeof updateEnvironment==='function') updateEnvironment(true);
 
   sun.position.set(-HALF*1.10, HALF*0.62, HALF*0.55);
   sun.target.position.set(0,0,0);
@@ -1541,6 +1605,7 @@ function mergeParts(parts,dirt){
   var vc=0,ic=0,i;
   for(i=0;i<parts.length;i++){ vc+=parts[i].g.attributes.position.count; ic+=parts[i].g.index.count; }
   var P=new Float32Array(vc*3), Nn=new Float32Array(vc*3), C=new Float32Array(vc*3),
+      S=new Float32Array(vc*2),
       I=(vc>65000)?new Uint32Array(ic):new Uint16Array(ic);
   var vo=0,io=0;
   for(i=0;i<parts.length;i++){
@@ -1560,6 +1625,10 @@ function mergeParts(parts,dirt){
         r*=jit; g*=jit; b*=jit;
       }
       C[(vo+j)*3]=r; C[(vo+j)*3+1]=g; C[(vo+j)*3+2]=b;
+      /* glass is smooth, paint is satin, rubber and dust are dead flat, and
+         bare steel is the only thing here that behaves like metal */
+      S[(vo+j)*2]=parts[i].s!==undefined?parts[i].s:0.85;
+      S[(vo+j)*2+1]=parts[i].m!==undefined?parts[i].m:0.05;
     }
     for(j=0;j<ix.count;j++) I[io+j]=ix.array[j]+vo;
     vo+=n; io+=ix.count; parts[i].g.dispose();
@@ -1568,9 +1637,13 @@ function mergeParts(parts,dirt){
   G.setAttribute("position",new THREE.BufferAttribute(P,3));
   G.setAttribute("normal",new THREE.BufferAttribute(Nn,3));
   G.setAttribute("color",new THREE.BufferAttribute(C,3));
+  G.setAttribute("surf",new THREE.BufferAttribute(S,2));
   G.setIndex(new THREE.BufferAttribute(I,1));
   return G;
 }
+function surf(part,rough,metal){ part.s=rough; part.m=metal; return part; }
+var GLASSY=[0.07,0.0], PAINT=[0.62,0.05], STEELY=[0.34,0.85],
+    RUBBER=[0.95,0.0], DUSTY=[0.97,0.0], GRIME=[0.88,0.15];
 
 function LIN3(r,g,b){ return [Math.pow(r,2.2),Math.pow(g,2.2),Math.pow(b,2.2)]; }
 var DK =LIN3(.26,.25,.24),  BLK=LIN3(.115,.11,.105), STL=LIN3(.50,.49,.47),
@@ -1587,20 +1660,20 @@ var DK =LIN3(.26,.25,.24),  BLK=LIN3(.115,.11,.105), STL=LIN3(.50,.49,.47),
    is only about three-quarters as long, set back over the rear. Nothing pale
    goes near the running gear — that was what made it read as feet. */
 var UNDER=[
-  boxPart(.34,.09,.38,    -.02,.150,   0,  DUS[0],DUS[1],DUS[2],0,.86),   /* car body */
-  boxPart(.25,.04,.25,    -.02,.205,   0,  STL[0],STL[1],STL[2])          /* slew ring */
+  surf(boxPart(.34,.09,.38,    -.02,.150,   0,  DUS[0],DUS[1],DUS[2],0,.86),DUSTY[0],DUSTY[1]),   /* car body */
+  surf(boxPart(.25,.04,.25,    -.02,.205,   0,  STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])          /* slew ring */
 ];
 (function(){
   for(var side=-1;side<=1;side+=2){
     var z=side*.255;
     /* the belt: one continuous dark mass, which is what you actually see */
-    UNDER.push(boxPart(1.00,.115,.20,  0,.058, z, BLK[0],BLK[1],BLK[2]));
-    UNDER.push(boxPart(.86,.075,.175,  0,.150, z, BLK[0],BLK[1],BLK[2]));  /* upper run */
+    UNDER.push(surf(boxPart(1.00,.115,.20,  0,.058, z, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]));
+    UNDER.push(surf(boxPart(.86,.075,.175,  0,.150, z, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]));  /* upper run */
     UNDER.push(boxPart(.70,.085,.125,  0,.125, z, DK[0],DK[1],DK[2]));     /* frame, inboard */
     UNDER.push(boxPart(.10,.145,.185, .475,.100, z, DK[0],DK[1],DK[2],0,.82)); /* idler */
     UNDER.push(boxPart(.13,.165,.19, -.470,.108, z, DK[0],DK[1],DK[2],0,.86)); /* sprocket */
     for(var k=0;k<11;k++)                                                  /* grousers */
-      UNDER.push(boxPart(.052,.032,.215, -.45+k*.09,.012, z, BLK[0],BLK[1],BLK[2]));
+      UNDER.push(surf(boxPart(.052,.032,.215, -.45+k*.09,.012, z, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]));
   }
   UNDER.push(boxPart(.30,.07,.30, -.02,.100, 0, DK[0],DK[1],DK[2]));       /* undercarriage spine */
 })();
@@ -1613,8 +1686,8 @@ var GEO_HOUSE=mergeParts([
   boxPart(.34,.17,.44,  -.20,.125,   0,  YEL[0],YEL[1],YEL[2],0,.90),      /* engine hood */
   boxPart(.32,.02,.42,  -.20,.216,   0,  YLD[0],YLD[1],YLD[2]),            /* hood seam */
   boxPart(.13,.115,.42, -.20,.255,   0,  YEL[0],YEL[1],YEL[2],0,.80),      /* hood riser */
-  boxPart(.16,.30,.50,  -.50,.150,   0,  BLK[0],BLK[1],BLK[2],0,.88),      /* counterweight */
-  boxPart(.11,.09,.44,  -.50,.335,   0,  BLK[0],BLK[1],BLK[2],0,.82),
+  surf(boxPart(.16,.30,.50,  -.50,.150,   0,  BLK[0],BLK[1],BLK[2],0,.88),RUBBER[0],RUBBER[1]),      /* counterweight */
+  surf(boxPart(.11,.09,.44,  -.50,.335,   0,  BLK[0],BLK[1],BLK[2],0,.82),RUBBER[0],RUBBER[1]),
   boxPart(.40,.13,.016, -.16,.105, .248, YLD[0],YLD[1],YLD[2]),            /* side panels */
   boxPart(.40,.13,.016, -.16,.105,-.248, YLD[0],YLD[1],YLD[2]),
   /* the cab is a glasshouse: a thin frame with glass in it */
@@ -1623,16 +1696,16 @@ var GEO_HOUSE=mergeParts([
   boxPart(.02,.29,.235,   .292,.190, .150, YEL[0],YEL[1],YEL[2]),          /* front post */
   boxPart(.02,.29,.235,   .058,.190, .150, YEL[0],YEL[1],YEL[2]),          /* rear post */
   boxPart(.235,.29,.02,   .175,.190, .265, YEL[0],YEL[1],YEL[2]),          /* outer wall */
-  boxPart(.20,.255,.012,  .175,.190, .258, GLS[0],GLS[1],GLS[2]),          /* side glass */
-  boxPart(.012,.255,.20,  .283,.190, .150, GLS[0],GLS[1],GLS[2]),          /* front glass */
-  boxPart(.19,.245,.19,   .175,.185, .150, GLS[0],GLS[1],GLS[2]),          /* interior */
+  surf(boxPart(.20,.255,.012,  .175,.190, .258, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),          /* side glass */
+  surf(boxPart(.012,.255,.20,  .283,.190, .150, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),          /* front glass */
+  surf(boxPart(.19,.245,.19,   .175,.185, .150, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),          /* interior */
   boxPart(.16,.20,.05,    .265,.115,-.055, DK[0],DK[1],DK[2]),             /* boom foot */
   boxPart(.16,.20,.05,    .265,.115,-.175, DK[0],DK[1],DK[2]),
-  boxPart(.014,.10,.26,   .305,.095, .012, STL[0],STL[1],STL[2]),          /* handrail */
+  surf(boxPart(.014,.10,.26,   .305,.095, .012, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),          /* handrail */
   boxPart(.09,.016,.12,   .255,-.012,.215, DK[0],DK[1],DK[2]),             /* step */
   boxPart(.03,.115,.03,  -.055,.245, .175, DK[0],DK[1],DK[2]),             /* exhaust */
-  boxPart(.045,.03,.045, -.015,.305, .175, RST[0],RST[1],RST[2]),
-  boxPart(.03,.04,.03,   -.36,.350, .140, CRM[0],CRM[1],CRM[2])            /* beacon */
+  surf(boxPart(.045,.03,.045, -.015,.305, .175, RST[0],RST[1],RST[2]),GRIME[0],GRIME[1]),
+  surf(boxPart(.03,.04,.03,   -.36,.350, .140, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])            /* beacon */
 ],true);
 
 var GEO_BOOM=mergeParts([
@@ -1640,18 +1713,18 @@ var GEO_BOOM=mergeParts([
   boxPart(.44,.072,.088, .640,.068,   0, YEL[0],YEL[1],YEL[2], -.33),
   boxPart(.30,.052,.052, .195,.137, .080, DK[0],DK[1],DK[2],    .30),      /* ram body */
   boxPart(.30,.052,.052, .195,.137,-.080, DK[0],DK[1],DK[2],    .30),
-  boxPart(.18,.028,.028, .420,.192, .080, CRM[0],CRM[1],CRM[2], .30),      /* bright rod */
-  boxPart(.18,.028,.028, .420,.192,-.080, CRM[0],CRM[1],CRM[2], .30),
+  surf(boxPart(.18,.028,.028, .420,.192, .080, CRM[0],CRM[1],CRM[2], .30),STEELY[0],STEELY[1]),      /* bright rod */
+  surf(boxPart(.18,.028,.028, .420,.192,-.080, CRM[0],CRM[1],CRM[2], .30),STEELY[0],STEELY[1]),
   boxPart(.25,.048,.048, .545,.137,   0, DK[0],DK[1],DK[2],    -.20),      /* stick ram */
   boxPart(.06,.10,.13,   .840,.000,   0, DK[0],DK[1],DK[2])                /* knuckle */
 ],true);
 
 var GEO_STICK=mergeParts([
   boxPart(.52,.072,.078, .260,   0,   0, YEL[0],YEL[1],YEL[2],0,.88),
-  boxPart(.20,.038,.038, .120,.072,   0, CRM[0],CRM[1],CRM[2]),            /* bucket ram rod */
+  surf(boxPart(.20,.038,.038, .120,.072,   0, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),            /* bucket ram rod */
   boxPart(.14,.048,.048, .030,.068,   0, DK[0],DK[1],DK[2]),
-  boxPart(.075,.045,.038,.487,.052, .035, STL[0],STL[1],STL[2]),           /* linkage */
-  boxPart(.075,.045,.038,.487,.052,-.035, STL[0],STL[1],STL[2])
+  surf(boxPart(.075,.045,.038,.487,.052, .035, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),           /* linkage */
+  surf(boxPart(.075,.045,.038,.487,.052,-.035, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])
 ],true);
 
 var GEO_BUCKET=mergeParts([
@@ -1660,25 +1733,46 @@ var GEO_BUCKET=mergeParts([
   boxPart(.155,.036,.235,.158,-.192,  0,  DK[0],DK[1],DK[2]),
   boxPart(.20,.185,.02,  .100,-.092, .118, DK[0],DK[1],DK[2]),
   boxPart(.20,.185,.02,  .100,-.092,-.118, DK[0],DK[1],DK[2]),
-  boxPart(.03,.03,.235,  .020,.020,   0,  STL[0],STL[1],STL[2]),
-  boxPart(.05,.026,.034, .245,-.194, .088, CRM[0],CRM[1],CRM[2]),          /* teeth */
-  boxPart(.05,.026,.034, .245,-.194, .030, CRM[0],CRM[1],CRM[2]),
-  boxPart(.05,.026,.034, .245,-.194,-.030, CRM[0],CRM[1],CRM[2]),
-  boxPart(.05,.026,.034, .245,-.194,-.088, CRM[0],CRM[1],CRM[2])
+  surf(boxPart(.03,.03,.235,  .020,.020,   0,  STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),
+  surf(boxPart(.05,.026,.034, .245,-.194, .088, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),          /* teeth */
+  surf(boxPart(.05,.026,.034, .245,-.194, .030, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),
+  surf(boxPart(.05,.026,.034, .245,-.194,-.030, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),
+  surf(boxPart(.05,.026,.034, .245,-.194,-.088, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])
 ],true);
 
 var GEO_LOAD=mergeParts([ boxPart(.135,.09,.20, .105,-.105, 0, .30,.21,.10) ]);
 
 /* far enough away that an arm is a pixel, this stands in */
 var GEO_BLOB=mergeParts([
-  boxPart(.92,.115,.165,  0,.09, .245, BLK[0],BLK[1],BLK[2]),
-  boxPart(.92,.115,.165,  0,.09,-.245, BLK[0],BLK[1],BLK[2]),
+  surf(boxPart(.92,.115,.165,  0,.09, .245, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]),
+  surf(boxPart(.92,.115,.165,  0,.09,-.245, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]),
   boxPart(.60,.24,.44, -.10,.27,   0,  YEL[0],YEL[1],YEL[2],0,.9),
   boxPart(.62,.075,.085, .48,.34,  0,  YEL[0],YEL[1],YEL[2], -.22),
   boxPart(.09,.19,.22,   .82,.15,  0,  DK[0],DK[1],DK[2])
 ],true);
 
 var machMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.88,metalness:.10});
+machMat.envMapIntensity=1.0;
+/* Read the roughness and metalness the geometry carries, and darken the
+   creases. Nothing on a real machine has the same finish everywhere, and
+   nothing is evenly lit into its corners. */
+machMat.onBeforeCompile=function(sh){
+  sh.vertexShader="attribute vec2 surf;\nvarying vec2 vSurf;\nvarying vec3 vLocal;\n"+
+    sh.vertexShader.replace("#include <begin_vertex>",
+      "#include <begin_vertex>\n  vSurf=surf;\n  vLocal=position;");
+  sh.fragmentShader="varying vec2 vSurf;\nvarying vec3 vLocal;\n"+
+    sh.fragmentShader
+      .replace("#include <roughnessmap_fragment>",
+        "#include <roughnessmap_fragment>\n  roughnessFactor=vSurf.x;")
+      .replace("#include <metalnessmap_fragment>",
+        "#include <metalnessmap_fragment>\n  metalnessFactor=vSurf.y;")
+      .replace("#include <aomap_fragment>",
+        "#include <aomap_fragment>\n"+
+        "  {\n"+
+        "    float crease=1.0-smoothstep(0.0,0.055,abs(vLocal.y)+abs(vLocal.z)*0.25);\n"+
+        "    reflectedLight.indirectDiffuse*=1.0-crease*0.30;\n"+
+        "  }");
+};
 function mkInst(g){
   var m=new THREE.InstancedMesh(g,machMat,MAXI);
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -2289,7 +2383,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788255200419  /* 01 Sep 2026 09:33 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788255845072  /* 01 Sep 2026 09:44 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -2722,7 +2816,7 @@ function frame(now){
     drawMachines(alpha);
   }
   stepDust(dt);
-  if(now-lastSunAt>2000){ lastSunAt=now; updateSun(); }
+  if(now-lastSunAt>2000){ lastSunAt=now; updateSun(); updateEnvironment(false); }
   driveCamera(now,dt);
   present(now);
   updateDev(now);
