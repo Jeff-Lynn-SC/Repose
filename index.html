@@ -30,6 +30,7 @@
 <div id="dev"></div>
 <div id="pad">
   <button data-k="space" class="wide">camera</button>
+  <button data-k="p" class="wide">purpose</button>
   <button data-k="o">world</button>
   <button data-k="f">find</button>
   <button data-k="m">+10</button>
@@ -1506,7 +1507,9 @@ function updateTerrain(alpha){
 }
 
 /* ---- machines, drawn from the interpolated snapshot ---- */
-var COL_A=[1.55,.62,.22], COL_B=[.30,1.25,1.15], COL_N=[1,1,1];
+/* Shown only on request: a raiser burns orange, a filler goes cold blue.
+   Strong enough to pick one out of a crowd at any distance. */
+var COL_A=[2.60,.62,.14], COL_B=[.16,1.05,2.60], COL_N=[1,1,1];
 var _m4=new THREE.Matrix4(), _mA=new THREE.Matrix4(), _mB=new THREE.Matrix4(), _mC=new THREE.Matrix4(),
     _up=new THREE.Vector3(), _fw=new THREE.Vector3(), _rt=new THREE.Vector3(),
     _sc=new THREE.Vector3(), _q=new THREE.Quaternion(), _pv=new THREE.Vector3();
@@ -2282,7 +2285,7 @@ function present(now){
    ============================================================= */
 var WORLD_HOME="https://repose-qd2m.onrender.com";
 var WORLD_URL=Q.get("world")||WORLD_HOME;
-var netOn=false, netSince=0, netFail=0, netAt=0, netKB=0, netVisitors=0, netPolls=0, netBuild=null;
+var netOn=false, netSince=0, netFail=0, netAt=0, netKB=0, netVisitors=0, netPolls=0, netBuild=null, netRaise=0, netFill=0;
 var netH=null, netW=null, netR=null;
 
 function myId(){
@@ -2357,6 +2360,9 @@ function netApply(d){
     netW[idx]=d.getUint8(o)/255; o+=1;
     netR[idx]=d.getUint8(o)/255; o+=1;
   }
+  var nr=0;
+  for(var c2=0;c2<count;c2++) if(ag[c2*12+8]===0) nr++;
+  netRaise=nr; netFill=count-nr;
   netSince=version;
   netKB+=(d.byteLength/1024); netPolls++;
 
@@ -2392,7 +2398,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788262030868  /* 01 Sep 2026 11:27 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788265606629  /* 01 Sep 2026 12:26 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -2716,6 +2722,7 @@ window.addEventListener("keydown",function(e){
   if(k===" "){ man.on=!man.on; if(man.on) manualOn(popX,BASE,popZ,Math.max(popR*2.5,60*machLen)); return; }
   if(lk==="o"){ manualOn(0,BASE,0,HALF*1.6); return; }          /* the whole world */
   if(lk==="f"){ manualOn(popX,BASE,popZ,Math.max(popR*2.2,40*machLen)); return; }
+  if(lk==="p"){ reveal=!reveal; return; }
   if(lk==="k"){                       /* step the clock round the day, for looking */
     FORCED_HOUR = (FORCED_HOUR===null)?0:(FORCED_HOUR+3);
     if(FORCED_HOUR>23){ FORCED_HOUR=null; }
@@ -2765,6 +2772,7 @@ function cycleOverlay(to){
       ev.preventDefault();
       var k=this.getAttribute("data-k");
       if(k==="space"){ man.on=!man.on; if(man.on) grabCamera(); }
+      else if(k==="p") reveal=!reveal;
       else if(k==="o") manualOn(0,BASE,0,HALF*1.6);
       else if(k==="f") manualOn(popX,BASE,popZ,Math.max(popR*2.2,40*machLen));
       else if(k==="m") addMachines(10);
@@ -2813,7 +2821,9 @@ function updateDev(now){
             :(INLINE?"inline":"worker")+" "+snapCount)+
       "  "+(man.on?"manual":("shot "+(shot?SHOTLABEL[shot.type]:"-")))+"\n"+
     "<b>day</b> "+(e.day!==undefined?e.day.toFixed(2):"-")+
-      "  <b>machines</b> "+(stats?stats.alive:"-")+"/"+SCALE.pop+
+      "  <b>machines</b> "+(stats?stats.alive:"-")+
+      (netOn?"  <b>raising</b> "+netRaise+" <b>filling</b> "+netFill:"")+
+      (reveal?"  [purpose shown]":"")+
       "  <b>visitors</b> "+(sharedCount!==null?sharedCount+" shared":VISITS+" local")+"\n"+
     "<b>sun</b> "+sunAlt.toFixed(0)+"\u00B0 "+
       (nightFactor>0.98?"night":(nightFactor>0.02?"dusk":"day"))+
