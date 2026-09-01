@@ -296,10 +296,10 @@ function Machine(role,atGate,px,pz){
   }
   this.ang=rnd()*Math.PI*2;
   this.load=0; this.cap=8*CS; this.state="go"; this.mode="scoop"; this.flash=0;
-  this.boom=0.50; this.stick=-1.42; this.buck=-0.60; this.slew=0; this.stroke=rnd()*2;
+  this.boom=0.12; this.stick=-1.05; this.buck=-0.95; this.slew=0; this.stroke=rnd()*2;
   this.wt=rnd()*10; this.ph=rnd()*6.28; this.life=8+rnd()*32;
   this.moving=0; this.digging=0; this.tipping=0;
-  this.tbA=0.50; this.tsA=-1.42; this.tkA=-0.62; this.slewT=0;
+  this.tbA=0.12; this.tsA=-1.05; this.tkA=-0.95; this.slewT=0;
   if(role===RAISE){
     this.sx=this.x; this.sz=this.z; this.ring=rnd()*Math.PI*2;
     this.best=hAt(this.x,this.z); this.lastH=this.best; this.check=0;
@@ -479,7 +479,7 @@ Machine.prototype.step=function(dt,self){
       }
     }
   } else {
-    this.tbA=0.50; this.tsA=-1.42; this.tkA=-0.62; this.slewT=0;
+    this.tbA=0.12; this.tsA=-1.05; this.tkA=-0.95; this.slewT=0;
     this.digging=0; this.tipping=0;
   }
 
@@ -1478,7 +1478,7 @@ function drawMachines(alpha){
     }
     RIG.under.setMatrixAt(i,mU);
     var mH=joint(_mA,mU,0,0.215,0,0,sl);            RIG.house.setMatrixAt(i,mH);
-    var mBo=joint(_mB,mH,0.30,0.130,-0.055,bm,0);   RIG.boom.setMatrixAt(i,mBo);
+    var mBo=joint(_mB,mH,0.265,0.130,-0.115,bm,0);   RIG.boom.setMatrixAt(i,mBo);
     var mS=joint(_mA,mBo,0.84,0,0,st,0);            RIG.stick.setMatrixAt(i,mS);
     var mK=joint(_mB,mS,0.50,0,0,bk,0);             RIG.bucket.setMatrixAt(i,mK);
     _mA.copy(mK);
@@ -1574,49 +1574,59 @@ var DK =LIN3(.26,.25,.24),  BLK=LIN3(.115,.11,.105), STL=LIN3(.50,.49,.47),
    track frame — about six metres. Each piece's origin is its
    own pivot, so the renderer can hang them off one another.
    --------------------------------------------------------- */
+/* The silhouette does the work. A real machine is long and low: the track
+   runs almost the whole length and stands proud at both ends, and the house
+   is only about three-quarters as long, set back over the rear. Nothing pale
+   goes near the running gear — that was what made it read as feet. */
 var UNDER=[
-  boxPart(.40,.105,.42,   0,.160,   0,  DUS[0],DUS[1],DUS[2],0,.86),
-  boxPart(.27,.045,.27,   0,.215,   0,  STL[0],STL[1],STL[2])
+  boxPart(.34,.09,.38,    -.02,.150,   0,  DUS[0],DUS[1],DUS[2],0,.86),   /* car body */
+  boxPart(.25,.04,.25,    -.02,.205,   0,  STL[0],STL[1],STL[2])          /* slew ring */
 ];
 (function(){
   for(var side=-1;side<=1;side+=2){
-    var z=side*.245;
-    UNDER.push(boxPart(.90,.100,.145, 0,.118, z, DK[0],DK[1],DK[2]));      /* frame */
-    UNDER.push(boxPart(.78,.038,.155, 0,.188, z, BLK[0],BLK[1],BLK[2]));   /* top run */
-    UNDER.push(boxPart(.100,.125,.155, .455,.095, z, DK[0],DK[1],DK[2]));  /* idler */
-    UNDER.push(boxPart(.128,.135,.16, -.445,.102, z, DK[0],DK[1],DK[2]));  /* sprocket */
-    for(var k=0;k<10;k++){                                                  /* track pads */
-      var x=-.42+k*.0933;
-      UNDER.push(boxPart(.062,.048,.185, x,.032, z, BLK[0],BLK[1],BLK[2]));
-    }
-    for(k=0;k<3;k++)                                                        /* rollers */
-      UNDER.push(boxPart(.055,.055,.10, -.22+k*.22,.066, z, STL[0],STL[1],STL[2]));
+    var z=side*.255;
+    /* the belt: one continuous dark mass, which is what you actually see */
+    UNDER.push(boxPart(1.00,.115,.20,  0,.058, z, BLK[0],BLK[1],BLK[2]));
+    UNDER.push(boxPart(.86,.075,.175,  0,.150, z, BLK[0],BLK[1],BLK[2]));  /* upper run */
+    UNDER.push(boxPart(.70,.085,.125,  0,.125, z, DK[0],DK[1],DK[2]));     /* frame, inboard */
+    UNDER.push(boxPart(.10,.145,.185, .475,.100, z, DK[0],DK[1],DK[2],0,.82)); /* idler */
+    UNDER.push(boxPart(.13,.165,.19, -.470,.108, z, DK[0],DK[1],DK[2],0,.86)); /* sprocket */
+    for(var k=0;k<11;k++)                                                  /* grousers */
+      UNDER.push(boxPart(.052,.032,.215, -.45+k*.09,.012, z, BLK[0],BLK[1],BLK[2]));
   }
+  UNDER.push(boxPart(.30,.07,.30, -.02,.100, 0, DK[0],DK[1],DK[2]));       /* undercarriage spine */
 })();
 var GEO_UNDER=mergeParts(UNDER,true);
 
+/* three-quarters the length of the track, set back, with the counterweight
+   hanging out over the rear */
 var GEO_HOUSE=mergeParts([
-  boxPart(.90,.05,.50,  -.05,.025,   0,  DK[0],DK[1],DK[2]),               /* deck */
-  boxPart(.36,.175,.42, -.16,.135,   0,  YEL[0],YEL[1],YEL[2],0,.90),      /* engine hood */
-  boxPart(.34,.02,.40,  -.16,.228,   0,  YLD[0],YLD[1],YLD[2]),            /* hood seam */
-  boxPart(.15,.26,.46,  -.44,.145,   0,  BLK[0],BLK[1],BLK[2],0,.92),      /* counterweight */
-  boxPart(.11,.075,.40, -.44,.305,   0,  BLK[0],BLK[1],BLK[2],0,.86),
-  boxPart(.42,.13,.018, -.14,.115, .245, YLD[0],YLD[1],YLD[2]),            /* side panels */
-  boxPart(.42,.13,.018, -.14,.115,-.245, YLD[0],YLD[1],YLD[2]),
-  boxPart(.24,.30,.23,   .20,.185, .145, YEL[0],YEL[1],YEL[2],0,.94),      /* cab */
-  boxPart(.015,.215,.185,.323,.205, .145, GLS[0],GLS[1],GLS[2]),           /* glass */
-  boxPart(.195,.17,.015, .20,.215, .262, GLS[0],GLS[1],GLS[2]),
-  boxPart(.26,.022,.245, .20,.342, .145, DK[0],DK[1],DK[2]),               /* cab roof */
-  boxPart(.14,.185,.05,  .30,.125, .015, DK[0],DK[1],DK[2]),               /* boom foot */
-  boxPart(.14,.185,.05,  .30,.125,-.105, DK[0],DK[1],DK[2]),
-  boxPart(.015,.105,.30, .355,.105, .06,  STL[0],STL[1],STL[2]),           /* handrail */
-  boxPart(.10,.018,.13,  .30,-.01, .215, STL[0],STL[1],STL[2]),            /* step */
-  boxPart(.035,.125,.035,-.015,.255,.165, STL[0],STL[1],STL[2]),           /* exhaust */
-  boxPart(.05,.035,.05,  .05,.315, .165, RST[0],RST[1],RST[2]),            /* stack cap */
-  boxPart(.035,.045,.035,-.30,.375,.125, CRM[0],CRM[1],CRM[2])             /* beacon */
+  boxPart(.74,.05,.50,  -.10,.025,   0,  DK[0],DK[1],DK[2]),               /* deck */
+  boxPart(.34,.17,.44,  -.20,.125,   0,  YEL[0],YEL[1],YEL[2],0,.90),      /* engine hood */
+  boxPart(.32,.02,.42,  -.20,.216,   0,  YLD[0],YLD[1],YLD[2]),            /* hood seam */
+  boxPart(.13,.115,.42, -.20,.255,   0,  YEL[0],YEL[1],YEL[2],0,.80),      /* hood riser */
+  boxPart(.16,.30,.50,  -.50,.150,   0,  BLK[0],BLK[1],BLK[2],0,.88),      /* counterweight */
+  boxPart(.11,.09,.44,  -.50,.335,   0,  BLK[0],BLK[1],BLK[2],0,.82),
+  boxPart(.40,.13,.016, -.16,.105, .248, YLD[0],YLD[1],YLD[2]),            /* side panels */
+  boxPart(.40,.13,.016, -.16,.105,-.248, YLD[0],YLD[1],YLD[2]),
+  /* the cab is a glasshouse: a thin frame with glass in it */
+  boxPart(.235,.045,.235, .175,.048, .150, YEL[0],YEL[1],YEL[2]),          /* cab floor */
+  boxPart(.235,.03,.245,  .175,.335, .150, DK[0],DK[1],DK[2],0,.95),       /* cab roof */
+  boxPart(.02,.29,.235,   .292,.190, .150, YEL[0],YEL[1],YEL[2]),          /* front post */
+  boxPart(.02,.29,.235,   .058,.190, .150, YEL[0],YEL[1],YEL[2]),          /* rear post */
+  boxPart(.235,.29,.02,   .175,.190, .265, YEL[0],YEL[1],YEL[2]),          /* outer wall */
+  boxPart(.20,.255,.012,  .175,.190, .258, GLS[0],GLS[1],GLS[2]),          /* side glass */
+  boxPart(.012,.255,.20,  .283,.190, .150, GLS[0],GLS[1],GLS[2]),          /* front glass */
+  boxPart(.19,.245,.19,   .175,.185, .150, GLS[0],GLS[1],GLS[2]),          /* interior */
+  boxPart(.16,.20,.05,    .265,.115,-.055, DK[0],DK[1],DK[2]),             /* boom foot */
+  boxPart(.16,.20,.05,    .265,.115,-.175, DK[0],DK[1],DK[2]),
+  boxPart(.014,.10,.26,   .305,.095, .012, STL[0],STL[1],STL[2]),          /* handrail */
+  boxPart(.09,.016,.12,   .255,-.012,.215, DK[0],DK[1],DK[2]),             /* step */
+  boxPart(.03,.115,.03,  -.055,.245, .175, DK[0],DK[1],DK[2]),             /* exhaust */
+  boxPart(.045,.03,.045, -.015,.305, .175, RST[0],RST[1],RST[2]),
+  boxPart(.03,.04,.03,   -.36,.350, .140, CRM[0],CRM[1],CRM[2])            /* beacon */
 ],true);
 
-/* the boom bends, and it is thinner than it looks from a distance */
 var GEO_BOOM=mergeParts([
   boxPart(.46,.085,.10,  .213,.065,   0, YEL[0],YEL[1],YEL[2],  .30),
   boxPart(.44,.072,.088, .640,.068,   0, YEL[0],YEL[1],YEL[2], -.33),
@@ -2090,7 +2100,7 @@ var compMat=new THREE.ShaderMaterial({
     "void main(){",
     "  vec2 d=vUv-0.5;",
     "  float r2=dot(d,d);",
-    "  vec2 ca=d*r2*0.010;",                       // the lens is not perfect
+    "  vec2 ca=d*r2*0.0035;",                       // the lens is not perfect
     "  vec3 c;",
     "  c.r=texture2D(tScene,vUv+ca).r;",
     "  c.g=texture2D(tScene,vUv).g;",
@@ -2271,7 +2281,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788253266760  /* 01 Sep 2026 09:01 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788253791515  /* 01 Sep 2026 09:09 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
