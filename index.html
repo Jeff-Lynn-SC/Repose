@@ -2074,7 +2074,7 @@ function present(now){
    ============================================================= */
 var WORLD_HOME="https://repose-qd2m.onrender.com";
 var WORLD_URL=Q.get("world")||WORLD_HOME;
-var netOn=false, netSince=0, netFail=0, netAt=0, netKB=0, netVisitors=0;
+var netOn=false, netSince=0, netFail=0, netAt=0, netKB=0, netVisitors=0, netPolls=0;
 var netH=null, netW=null, netR=null;
 
 function myId(){
@@ -2149,7 +2149,7 @@ function netApply(d){
     netR[idx]=d.getUint8(o)/255; o+=1;
   }
   netSince=version;
-  netKB+=(d.byteLength/1024);
+  netKB+=(d.byteLength/1024); netPolls++;
 
   hA=hB||new Float32Array(netH); agA=agB||new Float32Array(ag); nA=nB||count; tA=tB;
   hB=new Float32Array(netH); agB=ag; nB=count; wearB=netW; rockB=netR;
@@ -2183,7 +2183,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788249950757  /* 01 Sep 2026 08:05 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788250988952  /* 01 Sep 2026 08:23 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -2578,14 +2578,16 @@ function updateDev(now){
   if(now-fpsT>500){ fps=fpsN*1000/(now-fpsT); fpsN=0; fpsT=now; }
   if(!DEV) return;
   var e=era||{};
-  if(!snapCount){
-    devEl.textContent="waiting for the simulation"+(INLINE?" (on this thread)":"")+
+  if(!ready){
+    devEl.textContent=(netOn?"waiting for the world"+(netFail?"  ("+netFail+" tries)":"")
+                            :"waiting for the simulation"+(INLINE?" (on this thread)":""))+
       "   "+((Date.now()-startedAt)/1000).toFixed(1)+"s";
     return;
   }
   devEl.innerHTML=
     "<b>fps</b> "+fps.toFixed(0)+"  "+
-      (netOn?("world "+(netKB/Math.max(1,(Date.now()-startedAt)/1000)).toFixed(1)+" KB/s")
+      (netOn?("world "+netPolls+" updates, "+
+              (netKB/Math.max(1,(Date.now()-startedAt)/1000)).toFixed(1)+" KB/s")
             :(INLINE?"inline":"worker")+" "+snapCount)+
       "  "+(man.on?"manual":("shot "+(shot?SHOTLABEL[shot.type]:"-")))+"\n"+
     "<b>day</b> "+(e.day!==undefined?e.day.toFixed(2):"-")+
