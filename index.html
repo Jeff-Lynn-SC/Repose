@@ -1306,7 +1306,50 @@ function buildTerrain(){
   geo.setAttribute("normal",new THREE.BufferAttribute(nor,3));
   geo.setAttribute("color",new THREE.BufferAttribute(col,3));
   geo.setIndex(new THREE.BufferAttribute(ind,1));
-  terrain=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({vertexColors:true,roughness:1,metalness:0}));
+  var sandMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.96,metalness:0});
+  /* ---------------------------------------------------------
+     The grid is five and a half metres across a cell, so between
+     one corner and the next the ground is perfectly flat — which
+     is why it looks like paper close up. This adds the missing
+     half-metre: wind ripples, computed per pixel, tilting the
+     light without moving a single vertex. They fade out with
+     distance and on steep faces, where real ripples don't form.
+     --------------------------------------------------------- */
+  sandMat.onBeforeCompile=function(sh){
+    sh.uniforms.uRip={value:1.0};
+    sh.vertexShader="varying vec3 vWPos;\nvarying vec3 vWNrm;\n"+sh.vertexShader.replace(
+      "#include <begin_vertex>",
+      "#include <begin_vertex>\n"+
+      "  vWPos=(modelMatrix*vec4(transformed,1.0)).xyz;\n"+
+      "  vWNrm=normalize(mat3(modelMatrix)*normal);");
+    sh.fragmentShader=
+      "varying vec3 vWPos;\nvarying vec3 vWNrm;\nuniform float uRip;\n"+
+      "float ripple(vec2 p){\n"+
+      "  return sin(p.x*0.85+sin(p.y*0.19)*2.4)\n"+
+      "       + 0.55*sin(p.x*2.10+sin(p.y*0.47)*1.7)\n"+
+      "       + 0.28*sin((p.x*0.55+p.y*0.42)*4.7);\n"+
+      "}\n"+
+      sh.fragmentShader.replace(
+      "#include <normal_fragment_begin>",
+      "#include <normal_fragment_begin>\n"+
+      "  {\n"+
+      "    float dcam=length(vWPos-cameraPosition);\n"+
+      "    float near=1.0-smoothstep(24.0,190.0,dcam);\n"+
+      "    float lie=smoothstep(0.55,0.92,vWNrm.y);\n"+
+      "    float amt=near*lie*uRip;\n"+
+      "    if(amt>0.004){\n"+
+      "      vec2 q=vWPos.xz;\n"+
+      "      float e=0.5;\n"+
+      "      float r0=ripple(q);\n"+
+      "      float rx=ripple(q+vec2(e,0.0));\n"+
+      "      float rz=ripple(q+vec2(0.0,e));\n"+
+      "      vec3 wn=normalize(vWNrm-vec3(rx-r0,0.0,rz-r0)*0.42*amt);\n"+
+      "      normal=normalize((viewMatrix*vec4(wn,0.0)).xyz);\n"+
+      "    }\n"+
+      "  }");
+    sandMat.userData.shader=sh;
+  };
+  terrain=new THREE.Mesh(geo,sandMat);
   terrain.frustumCulled=false; terrain.castShadow=true; terrain.receiveShadow=true;
   scene.add(terrain);
 
@@ -1325,7 +1368,7 @@ function buildTerrain(){
     if(k<2) m.position.set(a[0],y,a[1]); else m.position.set(a[0],y,a[1]);
     m.castShadow=true; m.receiveShadow=true; scene.add(m); pit.push(m);
   });
-  fogRef=new THREE.FogExp2(0x3d3428,0.42/(HALF*2)); scene.fog=fogRef;
+  fogRef=new THREE.FogExp2(0x3d3428,1.35/(HALF*2)); scene.fog=fogRef;
   sunDist=Math.max(HALF*1.4,200);
   if(typeof updateSun==='function') updateSun();
 
@@ -1505,8 +1548,11 @@ function mergeParts(parts){
    Unit length 1.0 = machLen. Each piece's origin is its pivot.
    --------------------------------------------------------- */
 function LIN3(r,g,b){ return [Math.pow(r,2.2),Math.pow(g,2.2),Math.pow(b,2.2)]; }
-var DK =LIN3(.27,.28,.30),  BLK=LIN3(.14,.135,.13), STL=LIN3(.55,.57,.59),
-    GLS=LIN3(.13,.18,.21),  YEL=LIN3(.76,.58,.13),  DUS=LIN3(.42,.37,.29);
+/* Plant that has been working sand is not the colour it left the factory:
+   the yellow goes chalky, the tracks pack with the stuff they run on, and
+   nothing stays glossy for long. */
+var DK =LIN3(.30,.29,.28),  BLK=LIN3(.19,.17,.15), STL=LIN3(.52,.51,.48),
+    GLS=LIN3(.15,.19,.21),  YEL=LIN3(.68,.55,.22),  DUS=LIN3(.46,.40,.31);
 
 /* ---------------------------------------------------------
    Proportions taken from a 13-tonne tracked excavator: the
@@ -1572,7 +1618,7 @@ var GEO_BLOB=mergeParts([
   boxPart(.09,.18,.22,  .78,.16,   0, DK[0],DK[1],DK[2])
 ]);
 
-var machMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.72,metalness:.22});
+var machMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:.88,metalness:.10});
 function mkInst(g){
   var m=new THREE.InstancedMesh(g,machMat,MAXI);
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -2183,7 +2229,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788250988952  /* 01 Sep 2026 08:23 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788253066711  /* 01 Sep 2026 08:57 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
