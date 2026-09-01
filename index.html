@@ -33,6 +33,10 @@
   <button data-k="p" class="wide">purpose</button>
   <button data-k="o">world</button>
   <button data-k="f">find</button>
+  <button data-k="n" class="wide">next machine</button>
+  <button data-k="R1">+1 raiser</button>
+  <button data-k="F1">+1 filler</button>
+  <button data-k="pause" class="wide">pause</button>
   <button data-k="m">+10</button>
   <button data-k="M">+200</button>
   <button data-k="k">sky</button>
@@ -1026,7 +1030,15 @@ function nearestTo(a,self){
    only leans: what a machine is comes mostly from what its neighbours were.
    This is what lets one stretch of the pit come to have a character. */
 function inheritRole(a,b){
-  var fa=(a.role===FILL)?1:0, fb=b?((b.role===FILL)?1:0):fa;
+  /* The first birth is always the other purpose. A single machine left to
+     inherit from itself would found a world of one mind, which is an accident
+     of there being nobody else about rather than anything the rules intend.
+     Once there is a pair, heredity takes over. */
+  if(machines.length<=1) return (a.role===RAISE)?FILL:RAISE;
+  var fa=(a.role===FILL)?1:0;
+  /* and a machine with nobody near by takes its second parent from the era
+     rather than from itself, for the same reason */
+  var fb=b?((b.role===FILL)?1:0):((rnd()<mixRaise)?0:1);
   var p=0.78*((fa+fb)*0.5)+0.22*(1-mixRaise);
   if(rnd()<0.04) p=1-p;                       /* the occasional oddity */
   return (rnd()<p)?FILL:RAISE;
@@ -2080,7 +2092,7 @@ function chooseShot(){
     }
   }
   else if(type===SHOT.FOLLOW||type===SHOT.WORK){
-    var mi2=pickBusyMachine();
+    var mi2=(pinIx>=0&&pinIx<nB)?pinIx:pickBusyMachine();
     shot={type:type,follow:mi2,end:0};
     dur=type===SHOT.WORK?randIn(9,15):randIn(11,18);
   }
@@ -2098,6 +2110,7 @@ function chooseShot(){
    Taking the wheel. Not part of the piece: it is here so the
    thing can be looked at properly rather than only watched.
    --------------------------------------------------------- */
+var pinIx=-1;
 var man={on:false,tx:0,ty:0,tz:0,th:-0.9,ph:0.95,r:200};
 function manualOn(tx,ty,tz,r){
   man.on=true; man.tx=tx; man.ty=ty; man.tz=tz; man.r=r;
@@ -2398,7 +2411,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788265606629  /* 01 Sep 2026 12:26 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788266729263  /* 01 Sep 2026 12:45 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -2773,6 +2786,10 @@ function cycleOverlay(to){
       var k=this.getAttribute("data-k");
       if(k==="space"){ man.on=!man.on; if(man.on) grabCamera(); }
       else if(k==="p") reveal=!reveal;
+      else if(k==="R1") addMachines(1,"raise");
+      else if(k==="F1") addMachines(1,"fill");
+      else if(k==="n") nextMachine();
+      else if(k==="pause") togglePause(this);
       else if(k==="o") manualOn(0,BASE,0,HALF*1.6);
       else if(k==="f") manualOn(popX,BASE,popZ,Math.max(popR*2.2,40*machLen));
       else if(k==="m") addMachines(10);
@@ -2784,13 +2801,33 @@ function cycleOverlay(to){
     });
   }
 })();
-function addMachines(n){
+/* ---- looking at one machine at a time ----
+   The director keeps its own counsel about which machine to follow, which is
+   right for the piece and useless for watching one work. This pins it. */
+function nextMachine(){
+  if(!nB) return;
+  pinIx=(pinIx+1)%nB;
+  forceType=2;            /* hold the following shot */
+  man.on=false;
+  shotEnd=0;              /* cut to it now */
+}
+var paused=false;
+function togglePause(btn){
+  if(!netOn||!WORLD_URL) return;
+  var k=Q.get("key"); if(!k) return;
+  paused=!paused;
+  if(btn) btn.textContent=paused?"run":"pause";
+  fetch(WORLD_URL+"/speed?key="+encodeURIComponent(k)+"&x="+(paused?0:2.4),
+        {cache:"no-store"}).catch(function(){});
+}
+function addMachines(n,role){
   if(netOn){
     /* the machines live on the server, so ask it. Needs ?key= on the URL —
        the same word set as RESET_KEY there — or it refuses, as it should. */
     var k=Q.get("key");
     if(!k){ if(window.console) console.warn("add ?key=<your reset key> to the URL to add machines"); return; }
-    fetch(WORLD_URL+"/add?key="+encodeURIComponent(k)+"&n="+n,{cache:"no-store"})
+    fetch(WORLD_URL+"/add?key="+encodeURIComponent(k)+"&n="+n+
+          (role?"&role="+role:""),{cache:"no-store"})
       .then(function(r){ return r.json(); })
       .then(function(j){ if(j&&j.visitors!==undefined){ sharedCount=j.visitors; SCALE.pop=j.visitors; } })
       .catch(function(){});
