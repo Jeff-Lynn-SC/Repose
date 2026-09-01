@@ -9,27 +9,29 @@
     -webkit-user-select:none;user-select:none}
   canvas{display:block;touch-action:none}
   #scene{position:fixed;inset:0}
-  #dev{position:fixed;left:10px;bottom:10px;z-index:20;display:none;
-    font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    color:#d8b681;background:rgba(16,18,21,.72);border:1px solid rgba(216,182,129,.22);
-    padding:9px 12px;white-space:pre;pointer-events:none;letter-spacing:.02em}
+  #dev{position:fixed;left:8px;bottom:8px;z-index:20;display:none;
+    font:9.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:#d8b681;background:rgba(16,18,21,.62);border:1px solid rgba(216,182,129,.18);
+    padding:7px 9px;white-space:pre-wrap;pointer-events:none;letter-spacing:0;
+    max-width:min(360px,72vw)}
   #dev b{color:#f0d7a8;font-weight:600}
-  #pad{position:fixed;right:10px;top:10px;z-index:21;display:none;
-    flex-direction:column;gap:6px;width:118px}
-  #pad button{font:11px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    letter-spacing:.08em;color:#d8b681;background:rgba(16,18,21,.78);
-    border:1px solid rgba(216,182,129,.28);padding:11px 6px;cursor:pointer;
+  #pad{position:fixed;right:8px;bottom:8px;z-index:21;display:none;
+    grid-template-columns:1fr 1fr;gap:4px;width:150px}
+  #pad button{font:9.5px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    letter-spacing:.04em;color:#d8b681;background:rgba(16,18,21,.62);
+    border:1px solid rgba(216,182,129,.20);padding:9px 3px;cursor:pointer;
     -webkit-appearance:none;border-radius:0}
   #pad button:active{background:#f0d7a8;color:#101215}
+  #pad button.wide{grid-column:1/-1}
 </style>
 </head>
 <body>
 <div id="scene"></div>
 <div id="dev"></div>
 <div id="pad">
-  <button data-k="space">camera</button>
-  <button data-k="o">whole world</button>
-  <button data-k="f">find them</button>
+  <button data-k="space" class="wide">camera</button>
+  <button data-k="o">world</button>
+  <button data-k="f">find</button>
   <button data-k="m">+10</button>
   <button data-k="M">+200</button>
   <button data-k="k">sky</button>
@@ -1140,11 +1142,17 @@ self.onmessage=function(e){
 (function(){
 "use strict";
 
+/* read once, at the very top: the world's address and several other things
+   below are decided by it */
+var Q=new URLSearchParams(location.search);
+var HOURQ=parseFloat(Q.get("hour"));
+
 var TIME=2.4;
 
 var scene=new THREE.Scene();
 var renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,
+  window.innerWidth<820?1.4:2));      /* a phone at 3x is four times the work for no gain */
 renderer.toneMapping=THREE.NoToneMapping;      /* tonemapped later, after bloom */
 renderer.outputEncoding=THREE.LinearEncoding;
 renderer.shadowMap.enabled=true;
@@ -2014,7 +2022,10 @@ function makeTargets(w,h){
   var opt={minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,
            format:THREE.RGBAFormat,type:rtType,encoding:THREE.LinearEncoding};
   rtScene=new THREE.WebGLRenderTarget(w,h,opt);
-  var bw=Math.max(2,w>>2), bh=Math.max(2,h>>2);
+    /* the bloom runs at a fraction of the frame; smaller still on a phone,
+     where the fill rate is what costs, not the geometry */
+  var shift=(window.innerWidth<820)?3:2;
+  var bw=Math.max(2,w>>shift), bh=Math.max(2,h>>shift);
   rtA=new THREE.WebGLRenderTarget(bw,bh,opt);
   rtB=new THREE.WebGLRenderTarget(bw,bh,opt);
   bloomMat.uniforms.uTexel.value.set(1/bw,1/bh);
@@ -2046,6 +2057,117 @@ function present(now){
 }
 
 /* =========================================================
+   THE WORLD, ELSEWHERE
+
+   If WORLD_URL is set, the sand is not computed here. It is
+   asked for, five times a second, and only what has moved
+   comes back. The camera is still ours: everybody is looking
+   at the same world and nobody at the same thing.
+
+   If it cannot be reached, the browser quietly computes its
+   own world instead, and says so in the readout.
+   ========================================================= */
+/* ==================== THE WORLD'S ADDRESS ====================
+   Leave null and every browser computes its own world. Set it to the
+   address of a running server and they all share one instead.
+   ?world=https://... overrides it, for testing.
+   ============================================================= */
+var WORLD_HOME="https://repose-qd2m.onrender.com";
+var WORLD_URL=Q.get("world")||WORLD_HOME;
+var netOn=false, netSince=0, netFail=0, netAt=0, netKB=0, netVisitors=0;
+var netH=null, netW=null, netR=null;
+
+function myId(){
+  var k="repose.id", v=null;
+  try{ v=localStorage.getItem(k); if(!v){ v=Math.random().toString(36).slice(2)+Date.now().toString(36);
+       localStorage.setItem(k,v); } }catch(err){ v="anon"+Math.random(); }
+  return v;
+}
+function netJoin(){
+  fetch(WORLD_URL+"/join?id="+encodeURIComponent(myId()),{cache:"no-store"})
+    .then(function(r){ return r.json(); })
+    .then(function(j){ netVisitors=j.visitors; sharedCount=j.visitors; })
+    .catch(function(){});
+}
+function netPoll(){
+  if(!netOn) return;
+  fetch(WORLD_URL+"/state?since="+netSince,{cache:"no-store"})
+    .then(function(r){ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then(function(buf){ netApply(new DataView(buf)); netFail=0; })
+    .catch(function(){
+      if(++netFail===6){ netOn=false; console.warn("the world is not answering; computing one here instead");
+        startLocal(); }
+    });
+}
+function netApply(d){
+  var o=0;
+  var version=d.getUint32(o,true); o+=4;
+  var n2=d.getUint16(o,true); o+=2;
+  var count=d.getUint16(o,true); o+=2;
+  var cs=d.getFloat32(o,true); o+=4;
+  var half=d.getFloat32(o,true); o+=4;
+  var base=d.getFloat32(o,true); o+=4;
+  var mlen=d.getFloat32(o,true); o+=4;
+  var mix=d.getFloat32(o,true); o+=4;
+  var rep=d.getFloat32(o,true); o+=4;
+  var wind=d.getFloat32(o,true); o+=4;
+  netVisitors=d.getUint32(o,true); o+=4;
+  var changed=d.getUint32(o,true); o+=4;
+
+  if(N!==n2||!netH){
+    N=n2; CS=cs; HALF=half; BASE=base;
+    netH=new Float32Array(N*N); netW=new Float32Array(N*N); netR=new Float32Array(N*N);
+    for(var q=0;q<netH.length;q++) netH[q]=base;
+    hA=null; hB=null; agA=null; agB=null;
+    buildTerrain();
+  }
+  machLen=mlen; sharedCount=netVisitors;
+  SCALE.pop=netVisitors;
+  era={day:0,mix:mix,repose:rep,windStr:wind,windDir:0};
+
+  /* the machines, all of them, every time: they are small and they all move */
+  var ag=new Float32Array(count*12), P=Math.PI/32767;
+  for(var i=0;i<count;i++){
+    var p=i*12;
+    ag[p]  =d.getInt16(o,true)/32767*half; o+=2;
+    ag[p+1]=d.getInt16(o,true)/32767*half; o+=2;
+    ag[p+2]=d.getInt16(o,true)*P; o+=2;
+    ag[p+3]=d.getInt16(o,true)*P; o+=2;
+    ag[p+4]=d.getInt16(o,true)*P; o+=2;
+    ag[p+5]=d.getInt16(o,true)*P; o+=2;
+    ag[p+6]=d.getInt16(o,true)*P; o+=2;
+    ag[p+7]=d.getUint8(o)/255; o+=1;
+    ag[p+8]=d.getUint8(o); o+=1;
+    ag[p+9]=d.getUint8(o)/255; o+=1;
+    ag[p+10]=ag[p]; ag[p+11]=ag[p+1];
+  }
+  /* and only the ground that has moved */
+  for(var c=0;c<changed;c++){
+    var idx=d.getUint32(o,true); o+=4;
+    netH[idx]=d.getInt16(o,true)/100; o+=2;
+    netW[idx]=d.getUint8(o)/255; o+=1;
+    netR[idx]=d.getUint8(o)/255; o+=1;
+  }
+  netSince=version;
+  netKB+=(d.byteLength/1024);
+
+  hA=hB||new Float32Array(netH); agA=agB||new Float32Array(ag); nA=nB||count; tA=tB;
+  hB=new Float32Array(netH); agB=ag; nB=count; wearB=netW; rockB=netR;
+  tB=performance.now();
+  articulate=count<=400; setDetail(articulate);
+  measurePopulation();
+  stats={mean:base,max:0,gini:0,stripped:0,buried:0,tracked:0,collapses:0,
+         nA:0,nB:0,mass:0,alive:count,wanted:netVisitors,births:0,deaths:0};
+  ready=true;
+}
+function startWorldLink(){
+  netOn=true;
+  netJoin();
+  netPoll();
+  setInterval(netPoll,200);
+}
+
+/* =========================================================
    THE WORKER AND THE LOOP
 
    The pit is kept in this browser. Come back tomorrow and it is
@@ -2061,7 +2183,7 @@ function present(now){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1787502348927  /* 23 Aug 2026 16:25 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788249950757  /* 01 Sep 2026 08:05 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -2089,8 +2211,6 @@ var SAVEKEY ="repose.world."+WORLDTAG, VISITKEY="repose.visits."+WORLDTAG;
      c               cut now
      d               show or hide the readout
    =================================================================== */
-var Q=new URLSearchParams(location.search);
-var HOURQ=parseFloat(Q.get("hour"));
 var DEV=Q.has("dev"), NOSAVE=Q.has("nosave");
 var CLOCKSHIFT=(parseFloat(Q.get("days"))||0)*86400000;
 var SHOTNAMES={wide:0,tripod:1,follow:2,work:3,summit:4,conflict:5,grand:6,aftermath:7};
@@ -2225,7 +2345,10 @@ function fail(msg){
   if(e){ e.style.display="block"; e.textContent=msg; }
   if(window.console) console.error(msg);
 }
-function startWorker(){
+function startLocal(){ startWorker(true); }
+function startWorker(force){
+  /* if there is one world, ask it; otherwise compute one here */
+  if(!force && WORLD_URL){ startedAt=Date.now(); startWorldLink(); return; }
   var src=document.getElementById("simsrc").textContent;
   startedAt=Date.now();
   try{
@@ -2395,8 +2518,7 @@ window.addEventListener("keydown",function(e){
   else if(k==="r"){ try{localStorage.removeItem(SAVEKEY);}catch(err){} location.reload(); }
   else if(k==="v"){ try{localStorage.setItem(VISITKEY,String(VISITS+25));}catch(err){} location.reload(); }
   else if(k==="c"){ shotEnd=0; }
-  else if(k==="d"&&!keys.d2){ DEV=!DEV; devEl.style.display=DEV?"block":"none";
-    var pd=document.getElementById("pad"); if(pd) pd.style.display=DEV?"flex":"none"; }
+  else if(k==="d"&&!keys.d2){ cycleOverlay(); }
 });
 /* A way in that needs no address bar: three taps in the top-left corner.
    Nobody finds it by accident, and it works wherever the thing is opened. */
@@ -2408,20 +2530,26 @@ window.addEventListener("keydown",function(e){
     if(t-first>1400){ first=t; taps=0; }
     taps++;
     if(taps>=3){
-      taps=0;
-      DEV=!DEV;
-      devEl.style.display=DEV?"block":"none";
-      var pd=document.getElementById("pad");
-      if(pd) pd.style.display=DEV?"flex":"none";
+      taps=0; cycleOverlay();
     }
   },true);
 })();
+
+/* nothing -> the figures -> the figures and the buttons -> nothing again */
+var overlay=0;
+function cycleOverlay(to){
+  overlay=(to===undefined)?((overlay+1)%3):to;
+  DEV=overlay>0;
+  devEl.style.display=overlay>0?"block":"none";
+  var pd=document.getElementById("pad");
+  if(pd) pd.style.display=overlay>1?"grid":"none";
+}
 
 /* the same actions as the keys, for a screen with no keyboard */
 (function(){
   var pad=document.getElementById("pad");
   if(!pad) return;
-  if(DEV) pad.style.display="flex";
+  if(DEV) cycleOverlay(2);
   var bs=pad.getElementsByTagName("button");
   for(var i=0;i<bs.length;i++){
     bs[i].addEventListener("click",function(ev){
@@ -2456,26 +2584,22 @@ function updateDev(now){
     return;
   }
   devEl.innerHTML=
-    "<b>"+(INLINE?"inline":"worker")+"</b> "+snapCount+" frames"+
-    "   terrain "+(terrain?"built":"NOT BUILT")+"\n"+
+    "<b>fps</b> "+fps.toFixed(0)+"  "+
+      (netOn?("world "+(netKB/Math.max(1,(Date.now()-startedAt)/1000)).toFixed(1)+" KB/s")
+            :(INLINE?"inline":"worker")+" "+snapCount)+
+      "  "+(man.on?"manual":("shot "+(shot?SHOTLABEL[shot.type]:"-")))+"\n"+
     "<b>day</b> "+(e.day!==undefined?e.day.toFixed(2):"-")+
-    "   <b>visitors</b> "+(sharedCount!==null?sharedCount:VISITS+" (this browser only)")+
-    "   <b>machines</b> "+SCALE.pop+
-    "\n<b>pit</b> "+SCALE.width.toFixed(0)+" m   grid "+SCALE.N+
-    "   cell "+CS.toFixed(2)+" m   "+(SCALE.field?"field":(SCALE.pop>400?"crowd":"individuals"))+
-    "\n<b>raise</b> "+(e.mix!==undefined?(e.mix*100).toFixed(0)+"%":"-")+
-    "   repose "+(e.repose!==undefined?e.repose.toFixed(0)+"\u00B0":"-")+
-    "   wind "+(e.windStr!==undefined?e.windStr.toFixed(2):"-")+
-    "\n<b>shot</b> "+(shot?SHOTLABEL[shot.type]:"-")+(forceType>=0?" (held)":"")+
-    "   <b>fps</b> "+fps.toFixed(0)+
-    "\n"+(stats?("alive "+stats.alive+" of "+stats.wanted+"   peak "+stats.max.toFixed(1)+
-      " m   stripped "+(stats.stripped*100).toFixed(1)+"%   collapses "+stats.collapses):"")+
-    "\n"+"sun "+sunAlt.toFixed(0)+"\u00B0  "+
+      "  <b>machines</b> "+(stats?stats.alive:"-")+"/"+SCALE.pop+
+      "  <b>visitors</b> "+(sharedCount!==null?sharedCount+" shared":VISITS+" local")+"\n"+
+    "<b>sun</b> "+sunAlt.toFixed(0)+"\u00B0 "+
       (nightFactor>0.98?"night":(nightFactor>0.02?"dusk":"day"))+
-      (FORCED_HOUR===null?"":"  (held at "+FORCED_HOUR+":00 UTC)")+
-    "\n"+(man.on?"MANUAL  drag/scroll, WASD QE":"director")+
-    "   space=take over  o=whole world  f=find them\n"+
-    "m=+10 machines  M=+200  k=sky  b=bare render  r=restart";
+      (FORCED_HOUR===null?"":" @"+FORCED_HOUR+"h")+
+      "  raise "+(e.mix!==undefined?(e.mix*100).toFixed(0)+"%":"-")+
+      "  repose "+(e.repose!==undefined?e.repose.toFixed(0)+"\u00B0":"-")+
+      "  wind "+(e.windStr!==undefined?e.windStr.toFixed(2):"-")+"\n"+
+    (stats?("<b>peak</b> "+stats.max.toFixed(1)+"m  stripped "+(stats.stripped*100).toFixed(1)+
+      "%  tracked "+(stats.tracked*100).toFixed(0)+"%  collapses "+stats.collapses+
+      "  born "+stats.births+" lost "+stats.deaths):"");
 }
 
 var lastSunAt=0;
@@ -2498,7 +2622,7 @@ function frame(now){
 
 resize();
 startWorker();
-askCounter();
+if(!WORLD_URL) askCounter();
 requestAnimationFrame(frame);
 })();
 </script>
