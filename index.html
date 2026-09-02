@@ -36,6 +36,8 @@
   <button data-k="n" class="wide">next machine</button>
   <button data-k="R1">+1 raiser</button>
   <button data-k="F1">+1 filler</button>
+  <button data-k="R0">-1 raiser</button>
+  <button data-k="F0">-1 filler</button>
   <button data-k="pause" class="wide">pause</button>
   <button data-k="m">+10</button>
   <button data-k="M">+200</button>
@@ -905,16 +907,16 @@ function tracerStep(a,dt,self){
 }
 
 
-var maxH=0,gini=0,nA=0,nB=0,totalMass=0,stripped=0,buried=0,tracked=0;
+var maxH=0,minH=0,gini=0,nA=0,nB=0,totalMass=0,stripped=0,buried=0,tracked=0;
 var gHist=[],aHist=[],samp=new Float32Array(1400);
 function stats(){
-  var sum=0,mx=0,i,st=0,bu=0,tk=0,tol=0.4*CS;
+  var sum=0,mx=-1e9,mn=1e9,i,st=0,bu=0,tk=0,tol=0.4*CS;
   for(i=0;i<h.length;i++){
-    var v=h[i]; sum+=v; if(v>mx) mx=v;
+    var v=h[i]; sum+=v; if(v>mx) mx=v; if(v<mn) mn=v;
     var d=v-h0[i]; if(d<-tol) st++; else if(d>tol) bu++;
     if(wear[i]>0.1) tk++;
   }
-  meanH=sum/h.length; maxH=mx;
+  meanH=sum/h.length; maxH=mx; minH=mn;
   stripped=st/h.length; buried=bu/h.length; tracked=tk/h.length;
   var carried=0;
   if(!fieldMode) for(i=0;i<machines.length;i++) carried+=machines[i].load;
@@ -1222,7 +1224,7 @@ function snapshot(){
     h:hh, wear:ww, agents:ag, dust:du, events:ev, rock:rk,
     era:{day:worldDays(),mix:mixRaise,repose:reposeDeg,rate:rateMul,windDir:windDir,windStr:windStr},
     N:N, CS:CS, HALF:HALF, BASE:BASE, machLen:machLen, fieldMode:fieldMode,
-    stats:{mean:meanH,max:maxH,gini:gini,stripped:stripped,buried:buried,
+    stats:{mean:meanH,max:maxH,min:minH,gini:gini,stripped:stripped,buried:buried,
            tracked:tracked,collapses:collapses,nA:nA,nB:nB,mass:totalMass,
            alive:machines.length,wanted:targetPop,births:births,deaths:deaths}};
   dustN=0; evN=0;
@@ -2521,15 +2523,27 @@ function netApply(d){
   tB=performance.now();
   articulate=count<=400; setDetail(articulate);
   measurePopulation();
-  stats={mean:base,max:0,gini:0,stripped:0,buried:0,tracked:0,collapses:0,
+  /* the packet has no figures in it; they arrive separately. Until the first
+     lot turns up, say what can be seen from here and nothing more. */
+  if(!stats) stats={mean:base,max:0,gini:0,stripped:0,buried:0,tracked:0,collapses:0,
          nA:0,nB:0,mass:0,alive:count,wanted:netVisitors,births:0,deaths:0};
+  stats.alive=count; stats.wanted=netVisitors;
   ready=true;
+}
+function netFigures(){
+  if(!netOn) return;
+  fetch(WORLD_URL+"/stats",{cache:"no-store"})
+    .then(function(r){ return r.json(); })
+    .then(function(j){ if(j&&j.max!==undefined) stats=j; })
+    .catch(function(){});
 }
 function startWorldLink(){
   netOn=true;
   netJoin();
   netPoll();
   setInterval(netPoll,200);
+  netFigures();
+  setInterval(netFigures,3000);
 }
 
 /* =========================================================
@@ -2548,7 +2562,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788336981378  /* 2026-09-02 08:16 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788367048824  /* 2026-09-02 16:37 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -2925,6 +2939,8 @@ function cycleOverlay(to){
       else if(k==="p") reveal=!reveal;
       else if(k==="R1") addMachines(1,"raise");
       else if(k==="F1") addMachines(1,"fill");
+      else if(k==="R0") removeMachines(1,"raise");
+      else if(k==="F0") removeMachines(1,"fill");
       else if(k==="n") nextMachine();
       else if(k==="pause") togglePause(this);
       else if(k==="o") manualOn(0,BASE,0,HALF*1.6);
@@ -2973,6 +2989,18 @@ function addMachines(n,role){
   SCALE.pop+=n;
   if(worker) worker.postMessage({type:"addPop",n:n});
 }
+/* Take one out, so that a single machine can be watched doing its one thing
+   without the others confusing the picture. Needs ?key= like adding does. */
+function removeMachines(n,role){
+  if(!netOn) return;
+  var k=Q.get("key");
+  if(!k){ if(window.console) console.warn("add ?key=<your reset key> to the URL to remove machines"); return; }
+  fetch(WORLD_URL+"/remove?key="+encodeURIComponent(k)+"&n="+n+
+        (role?"&role="+role:""),{cache:"no-store"})
+    .then(function(r){ return r.json(); })
+    .then(function(j){ if(j&&j.visitors!==undefined){ sharedCount=j.visitors; SCALE.pop=j.visitors; } })
+    .catch(function(){});
+}
 var fps=0, fpsT=performance.now(), fpsN=0;
 var SHOTLABEL=["wide","tripod","follow","work","summit","conflict","grand","aftermath"];
 function updateDev(now){
@@ -3005,7 +3033,9 @@ function updateDev(now){
       "  raise "+(e.mix!==undefined?(e.mix*100).toFixed(0)+"%":"-")+
       "  repose "+(e.repose!==undefined?e.repose.toFixed(0)+"\u00B0":"-")+
       "  wind "+(e.windStr!==undefined?e.windStr.toFixed(2):"-")+"\n"+
-    (stats?("<b>peak</b> "+stats.max.toFixed(1)+"m  stripped "+(stats.stripped*100).toFixed(1)+
+    (stats?("<b>peak</b> +"+(stats.max-stats.mean).toFixed(1)+"m  <b>deepest</b> "+
+      ((stats.min!==undefined?stats.min:stats.mean)-stats.mean).toFixed(1)+"m"+
+      "  stripped "+(stats.stripped*100).toFixed(1)+
       "%  tracked "+(stats.tracked*100).toFixed(0)+"%  collapses "+stats.collapses+
       "  born "+stats.births+" lost "+stats.deaths):"");
 }
