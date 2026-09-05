@@ -344,10 +344,10 @@ function Machine(role,atGate,px,pz){
   this.ring=rnd()*6.2832; this.sx=this.x; this.sz=this.z;
   this.ang=rnd()*Math.PI*2;
   this.load=0; this.got=0; this.idle=0; this.cap=BUCKET/(CS*CS); this.state="go"; this.mode="scoop"; this.flash=0;
-  this.boom=0.55; this.stick=-1.30; this.buck=-0.35; this.slew=0; this.stroke=rnd()*2;
+  this.boom=-0.30; this.stick=0; this.buck=0.30; this.slew=0; this.stroke=rnd()*2;
   this.wt=rnd()*10; this.ph=rnd()*6.28; this.life=8+rnd()*32;
   this.moving=0; this.digging=0; this.tipping=0;
-  this.tbA=0.55; this.tsA=-1.30; this.tkA=-0.35; this.slewT=0;
+  this.tbA=-0.30; this.tsA=0; this.tkA=0.30; this.slewT=0;
   if(role===RAISE){
     this.sx=this.x; this.sz=this.z; this.ring=rnd()*Math.PI*2;
     this.best=hAt(this.x,this.z); this.lastH=this.best; this.check=0;
@@ -480,14 +480,24 @@ Machine.prototype.newJob=function(){
    given to this point, so the arm is the thing doing the work
    rather than an animation running alongside it.
    --------------------------------------------------------- */
-var L_BOOM=0.84, L_STICK=0.50, P_BOOMX=0.30, P_BOOMY=0.345, P_BOOMZ=-0.055;
+/* A telescopic boom, not a jointed arm. It pivots once at the back of the
+   machine and slides in and out; `stick` is now a length rather than an
+   angle, which is why nothing here needs an elbow. The bucket cannot be
+   drawn through its own boom because there is no joint for it to fold at. */
+var L_BASE=1.30, E_MAX=0.90, PITCH_LO=-0.80, PITCH_HI=1.15;
+/* The boom pivots high on this machine - level with the top of the cab -
+   so reaching the ground in front of it wants a good deal of down-pitch.
+   A limit of a quarter-turn was not enough and the teeth spent a third of
+   every dig in the air. */
+var P_BOOMX=-0.50, P_BOOMY=0.700, P_BOOMZ=-0.140;
+var TOOTH_X=0.275, TOOTH_Y=-0.249;     /* the cutting edge, in the bucket's own frame */
 var _tw={x:0,z:0,y:0};
 function toothWorld(a){
-  var d1=a.boom, d2=d1+a.stick, d3=d2+a.buck;
-  var px=P_BOOMX+L_BOOM*Math.cos(d1)+L_STICK*Math.cos(d2);
-  var py=P_BOOMY+L_BOOM*Math.sin(d1)+L_STICK*Math.sin(d2);
-  px+= 0.25*Math.cos(d3)+0.198*Math.sin(d3);
-  py+= 0.25*Math.sin(d3)-0.198*Math.cos(d3);
+  var d1=a.boom, d3=d1+a.buck, L=L_BASE+a.stick;
+  var px=P_BOOMX+L*Math.cos(d1);
+  var py=P_BOOMY+L*Math.sin(d1);
+  px+= TOOTH_X*Math.cos(d3)-TOOTH_Y*Math.sin(d3);
+  py+= TOOTH_X*Math.sin(d3)+TOOTH_Y*Math.cos(d3);
   var cs=Math.cos(a.slew), sn=Math.sin(a.slew);
   var lx=px*cs+P_BOOMZ*sn, lz=-px*sn+P_BOOMZ*cs;
   var ca=Math.cos(a.ang), sa=Math.sin(a.ang);
@@ -496,22 +506,16 @@ function toothWorld(a){
   _tw.y=py;
   return _tw;
 }
-/* two-link solve: put the bucket pivot at (tx,ty) measured from the boom foot */
+/* One pivot and a slide: pitch is an arctangent and extension is a
+   distance, so this always has an exact answer and there is no elbow to
+   fold. Returns the pitch and how far the inner section stands out. */
 var _ik={b:0,s:0};
 function armTo(tx,ty){
   var d=Math.sqrt(tx*tx+ty*ty);
-  /* A stick will not fold back onto its own boom. The old lower bound was
-     the bare geometric one, which let a close target ask for a hundred and
-     sixty degrees of fold - the bucket drawn through the boom, and the teeth
-     nowhere near the sand. This is the elbow at about a hundred and twenty-
-     five degrees, which is as far as the ram goes. */
-  var lo=0.706, hi=L_BOOM+L_STICK-0.02;
-  if(d<lo) d=lo; else if(d>hi) d=hi;
-  var c=(d*d-L_BOOM*L_BOOM-L_STICK*L_STICK)/(2*L_BOOM*L_STICK);
-  if(c>1) c=1; else if(c<-1) c=-1;
-  var a2=Math.acos(c);
-  _ik.s=-a2;
-  _ik.b=Math.atan2(ty,tx)+Math.atan2(L_STICK*Math.sin(a2),L_BOOM+L_STICK*Math.cos(a2));
+  if(d<L_BASE) d=L_BASE; else if(d>L_BASE+E_MAX) d=L_BASE+E_MAX;
+  var p=Math.atan2(ty,tx);
+  if(p<PITCH_LO) p=PITCH_LO; else if(p>PITCH_HI) p=PITCH_HI;
+  _ik.b=p; _ik.s=d-L_BASE;
   return _ik;
 }
 
@@ -556,9 +560,12 @@ Machine.prototype.step=function(dt,self){
   if(this.state==="work"){
     this.moving=0;
     this.stroke+=dt;
-    /* it parks and slews the house to face the work, rather than driving both ways */
+    /* There is no slewing house on a telehandler. It faces its work with the
+       whole machine, turning on the spot at the same rate its tracks used
+       to turn it, which is slower and shows. */
     var faceD=((Math.atan2(dz,dx)-this.ang+Math.PI*3)%(Math.PI*2))-Math.PI;
-    this.slewT=Math.max(-2.6,Math.min(2.6,faceD));
+    this.ang+=Math.min(Math.abs(faceD),0.55*dt)*(faceD<0?-1:1);
+    this.slewT=0;
     var reach=dist/machLen;
     if(reach<0.85) reach=0.85; else if(reach>1.50) reach=1.50;
 
@@ -596,11 +603,14 @@ Machine.prototype.step=function(dt,self){
          metre ABOVE its own pivot. Putting the teeth in the ground then
          means burying the arm to reach down to them, which is what it did
          - the pivot was under the sand 43% of the time it was digging. */
-      var d3=-0.90-0.90*q;
-      var k=armTo(r-P_BOOMX-(0.25*Math.cos(d3)+0.198*Math.sin(d3)),
-                  ty-P_BOOMY-(0.25*Math.sin(d3)-0.198*Math.cos(d3)));
-      var tk=d3-k.b-k.s;
-      if(this.idle){ this.tbA=0.55; this.tsA=-1.30; this.tkA=-0.35; }
+      /* A loading bucket does not curl under like a backhoe's. It goes in
+         nose down and rolls back as it fills, which keeps the cutting edge
+         the lowest part of the machine throughout. */
+      var d3=-0.28+0.62*q;
+      var k=armTo(r-P_BOOMX-(TOOTH_X*Math.cos(d3)-TOOTH_Y*Math.sin(d3)),
+                  ty-P_BOOMY-(TOOTH_X*Math.sin(d3)+TOOTH_Y*Math.cos(d3)));
+      var tk=d3-k.b;
+      if(this.idle){ this.tbA=-0.30; this.tsA=0; this.tkA=0.30; }
       else { this.tbA=k.b; this.tsA=k.s; this.tkA=tk; }
       /* only cuts while the teeth are actually in the ground */
       if(t.y*machLen+here <= groundAt+0.06*machLen){
@@ -633,7 +643,8 @@ Machine.prototype.step=function(dt,self){
       var r2=(this.stroke%4.6)/4.6;
       var ty2=(groundAt-here)/machLen+0.62;
       var k2=armTo(reach-P_BOOMX,ty2-P_BOOMY);
-      this.tbA=k2.b; this.tsA=k2.s; this.tkA=-1.15+1.50*r2;
+      /* rolling the bucket forward from carry to full tip */
+      this.tbA=k2.b; this.tsA=k2.s; this.tkA=(0.30-1.45*r2)-k2.b;
       if(r2>0.25){
         var give=Math.min(amt,this.load);
         this.load-=giveTo(t.x,t.z,0.55*CS,give);   /* only lose what the ground actually took */
@@ -665,7 +676,7 @@ Machine.prototype.step=function(dt,self){
       }
     }
   } else {
-    this.tbA=0.55; this.tsA=-1.30; this.tkA=-0.35; this.slewT=0;
+    this.tbA=-0.30; this.tsA=0; this.tkA=0.30; this.slewT=0;
     this.digging=0; this.tipping=0;
   }
 
@@ -1791,10 +1802,11 @@ function drawMachines(alpha){
       continue;
     }
     RIG.under.setMatrixAt(i,mU);
-    var mH=joint(_mA,mU,0,0.215,0,0,sl);            RIG.house.setMatrixAt(i,mH);
-    var mBo=joint(_mB,mH,0.265,0.130,-0.115,bm,0);   RIG.boom.setMatrixAt(i,mBo);
-    var mS=joint(_mA,mBo,0.84,0,0,st,0);            RIG.stick.setMatrixAt(i,mS);
-    var mK=joint(_mB,mS,0.50,0,0,bk,0);             RIG.bucket.setMatrixAt(i,mK);
+    var mH=joint(_mA,mU,0,0,0,0,0);                 RIG.house.setMatrixAt(i,mH);
+    var mBo=joint(_mB,mH,-0.50,0.700,-0.140,bm,0);  RIG.boom.setMatrixAt(i,mBo);
+    /* the inner section slides along the outer one: a translation, not a hinge */
+    var mS=joint(_mA,mBo,st,0,0,0,0);               RIG.stick.setMatrixAt(i,mS);
+    var mK=joint(_mB,mS,1.30,0,0,bk,0);             RIG.bucket.setMatrixAt(i,mK);
     _mA.copy(mK);
     var sv=lf>0.03?1:0.0001;
     _mC.makeScale(sv,lf>0.03?(0.35+0.65*lf):0.0001,sv);
@@ -1901,99 +1913,106 @@ var DK =LIN3(.26,.25,.24),  BLK=LIN3(.115,.11,.105), STL=LIN3(.50,.49,.47),
    runs almost the whole length and stands proud at both ends, and the house
    is only about three-quarters as long, set back over the rear. Nothing pale
    goes near the running gear — that was what made it read as feet. */
+/* --- a cylinder, for wheels: axis along Z, which is across the machine --- */
+function cylPart(rad,len,tx,ty,tz,r,g,b,segs){
+  var cg=new THREE.CylinderGeometry(rad,rad,len,segs||14,1,false);
+  cg.applyMatrix4(new THREE.Matrix4().makeRotationX(Math.PI/2));
+  cg.translate(tx,ty,tz);
+  return {g:cg,c:[r,g,b]};
+}
+var WR=.215, WW=.155, AX=.215;                 /* wheel radius, width, axle height */
+
+/* ---- chassis and wheels ---- */
 var UNDER=[
-  surf(boxPart(.34,.09,.38,    -.02,.150,   0,  DUS[0],DUS[1],DUS[2],0,.86),DUSTY[0],DUSTY[1]),   /* car body */
-  surf(boxPart(.25,.04,.25,    -.02,.205,   0,  STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])          /* slew ring */
+  boxPart(1.14,.115,.40, -.01,AX,   0,  DK[0],DK[1],DK[2]),                 /* main frame */
+  boxPart(.26,.10,.50,   -.38,AX,   0,  DK[0],DK[1],DK[2]),                 /* rear axle */
+  boxPart(.26,.10,.50,    .38,AX,   0,  DK[0],DK[1],DK[2]),                 /* front axle */
+  boxPart(.30,.10,.34,   -.54,AX+.02,0, DK[0],DK[1],DK[2],0,.88)            /* rear counterweight */
 ];
 (function(){
-  for(var side=-1;side<=1;side+=2){
-    var z=side*.255;
-    /* the belt: one continuous dark mass, which is what you actually see */
-    UNDER.push(surf(boxPart(1.00,.115,.20,  0,.058, z, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]));
-    UNDER.push(surf(boxPart(.86,.075,.175,  0,.150, z, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]));  /* upper run */
-    UNDER.push(boxPart(.70,.085,.125,  0,.125, z, DK[0],DK[1],DK[2]));     /* frame, inboard */
-    UNDER.push(boxPart(.10,.145,.185, .475,.100, z, DK[0],DK[1],DK[2],0,.82)); /* idler */
-    UNDER.push(boxPart(.13,.165,.19, -.470,.108, z, DK[0],DK[1],DK[2],0,.86)); /* sprocket */
-    for(var k=0;k<11;k++)                                                  /* grousers */
-      UNDER.push(surf(boxPart(.052,.032,.215, -.45+k*.09,.012, z, BLK[0],BLK[1],BLK[2]),RUBBER[0],RUBBER[1]));
+  for(var sx=-1;sx<=1;sx+=2) for(var sz=-1;sz<=1;sz+=2){
+    var x=sx*.38, z=sz*.245;
+    UNDER.push(surf(cylPart(WR,WW,x,AX,z,BLK[0],BLK[1],BLK[2],16),RUBBER[0],RUBBER[1]));      /* tyre */
+    UNDER.push(surf(cylPart(WR*.55,WW*1.12,x,AX,z,YEL[0],YEL[1],YEL[2],14),STEELY[0],STEELY[1])); /* rim */
+    UNDER.push(surf(cylPart(WR*.24,WW*1.20,x,AX,z,STL[0],STL[1],STL[2],10),STEELY[0],STEELY[1])); /* hub */
+    for(var t=0;t<9;t++){                                                    /* tread blocks */
+      var a=t/9*6.2832;
+      UNDER.push(surf(boxPart(.055,.045,WW*1.04, x+Math.cos(a)*WR*.94, AX+Math.sin(a)*WR*.94, z,
+                              BLK[0],BLK[1],BLK[2],a),RUBBER[0],RUBBER[1]));
+    }
   }
-  UNDER.push(boxPart(.30,.07,.30, -.02,.100, 0, DK[0],DK[1],DK[2]));       /* undercarriage spine */
 })();
 var GEO_UNDER=mergeParts(UNDER,true);
 
-/* three-quarters the length of the track, set back, with the counterweight
-   hanging out over the rear */
+/* ---- body: engine on the boom side, cab on the other, boom pivot at the rear ----
+   A Loadall carries its boom down the right-hand side and the operator sits
+   beside it, which is why the cab is narrow and the machine looks lopsided
+   from the front. That lopsidedness is the whole silhouette. */
 var GEO_HOUSE=mergeParts([
-  boxPart(.74,.05,.50,  -.10,.025,   0,  DK[0],DK[1],DK[2]),               /* deck */
-  boxPart(.34,.17,.44,  -.20,.125,   0,  YEL[0],YEL[1],YEL[2],0,.90),      /* engine hood */
-  boxPart(.32,.02,.42,  -.20,.216,   0,  YLD[0],YLD[1],YLD[2]),            /* hood seam */
-  boxPart(.13,.115,.42, -.20,.255,   0,  YEL[0],YEL[1],YEL[2],0,.80),      /* hood riser */
-  surf(boxPart(.16,.30,.50,  -.50,.150,   0,  BLK[0],BLK[1],BLK[2],0,.88),RUBBER[0],RUBBER[1]),      /* counterweight */
-  surf(boxPart(.11,.09,.44,  -.50,.335,   0,  BLK[0],BLK[1],BLK[2],0,.82),RUBBER[0],RUBBER[1]),
-  boxPart(.40,.13,.016, -.16,.105, .248, YLD[0],YLD[1],YLD[2]),            /* side panels */
-  boxPart(.40,.13,.016, -.16,.105,-.248, YLD[0],YLD[1],YLD[2]),
-  /* the cab is a glasshouse: a thin frame with glass in it */
-  boxPart(.235,.045,.235, .175,.048, .150, YEL[0],YEL[1],YEL[2]),          /* cab floor */
-  boxPart(.235,.03,.245,  .175,.335, .150, DK[0],DK[1],DK[2],0,.95),       /* cab roof */
-  boxPart(.02,.29,.235,   .292,.190, .150, YEL[0],YEL[1],YEL[2]),          /* front post */
-  boxPart(.02,.29,.235,   .058,.190, .150, YEL[0],YEL[1],YEL[2]),          /* rear post */
-  boxPart(.235,.29,.02,   .175,.190, .265, YEL[0],YEL[1],YEL[2]),          /* outer wall */
-  surf(boxPart(.20,.255,.012,  .175,.190, .258, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),          /* side glass */
-  surf(boxPart(.012,.255,.20,  .283,.190, .150, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),          /* front glass */
-  surf(boxPart(.19,.245,.19,   .175,.185, .150, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),          /* interior */
-  boxPart(.16,.20,.05,    .265,.115,-.055, DK[0],DK[1],DK[2]),             /* boom foot */
-  boxPart(.16,.20,.05,    .265,.115,-.175, DK[0],DK[1],DK[2]),
-  surf(boxPart(.014,.10,.26,   .305,.095, .012, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),          /* handrail */
-  boxPart(.09,.016,.12,   .255,-.012,.215, DK[0],DK[1],DK[2]),             /* step */
-  boxPart(.03,.115,.03,  -.055,.245, .175, DK[0],DK[1],DK[2]),             /* exhaust */
-  surf(boxPart(.045,.03,.045, -.015,.305, .175, RST[0],RST[1],RST[2]),GRIME[0],GRIME[1]),
-  surf(boxPart(.03,.04,.03,   -.36,.350, .140, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])            /* beacon */
+  boxPart(1.02,.10,.46, -.02,.325,   0,  DK[0],DK[1],DK[2]),                /* deck over the frame */
+  /* engine bay, boom side (-Z) */
+  boxPart(.52,.26,.22,  -.12,.500, -.145, YEL[0],YEL[1],YEL[2],0,.93),
+  boxPart(.50,.02,.20,  -.12,.634, -.145, YLD[0],YLD[1],YLD[2]),            /* hood seam */
+  surf(boxPart(.05,.10,.05, .13,.700,-.145, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),  /* exhaust */
+  /* boom pivot tower, right at the back */
+  boxPart(.20,.34,.24,  -.52,.560, -.140, DK[0],DK[1],DK[2],0,.90),
+  surf(boxPart(.08,.08,.26, -.50,.700,-.140, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),  /* pivot boss */
+  /* cab, the other side (+Z) */
+  boxPart(.44,.045,.26,  .06,.400,  .155, YEL[0],YEL[1],YEL[2]),            /* cab floor */
+  boxPart(.46,.035,.28,  .06,.760,  .155, DK[0],DK[1],DK[2],0,.95),         /* roof */
+  boxPart(.026,.34,.26,  .275,.585, .155, YEL[0],YEL[1],YEL[2]),            /* front post */
+  boxPart(.026,.34,.26, -.155,.585, .155, YEL[0],YEL[1],YEL[2]),            /* rear post */
+  /* the cab is a glasshouse: corner posts, a sill and glass. A solid outer
+     panel hid the windows entirely and made it read as a yellow crate. */
+  boxPart(.026,.34,.026, .275,.585, .285, YEL[0],YEL[1],YEL[2]),            /* outer front post */
+  boxPart(.026,.34,.026,-.155,.585, .285, YEL[0],YEL[1],YEL[2]),            /* outer rear post */
+  boxPart(.44,.045,.026,  .06,.428, .285, YEL[0],YEL[1],YEL[2]),            /* sill */
+  surf(boxPart(.40,.315,.012, .06,.602, .285, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
+  surf(boxPart(.012,.315,.24, .268,.602,.155, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
+  surf(boxPart(.012,.315,.24,-.148,.602,.155, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
+  boxPart(.39,.30,.235,  .06,.590, .150, BLK[0],BLK[1],BLK[2]),             /* the dark inside */
+  boxPart(.11,.13,.13,   .02,.500, .150, DK[0],DK[1],DK[2]),                /* seat */
+  boxPart(.10,.018,.13,  .215,.290, .240, DK[0],DK[1],DK[2]),               /* step */
+  surf(boxPart(.03,.04,.03,-.16,.800, .155, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])    /* beacon */
 ],true);
 
+/* ---- the boom: one straight member that telescopes, not a jointed arm ----
+   Outer section, pivoting at the rear of the machine. Its origin is the pivot
+   and it runs forward along its own +X. */
+var BL=1.30;
 var GEO_BOOM=mergeParts([
-  boxPart(.46,.085,.10,  .213,.065,   0, YEL[0],YEL[1],YEL[2],  .30),
-  boxPart(.44,.072,.088, .640,.068,   0, YEL[0],YEL[1],YEL[2], -.33),
-  boxPart(.30,.052,.052, .195,.137, .080, DK[0],DK[1],DK[2],    .30),      /* ram body */
-  boxPart(.30,.052,.052, .195,.137,-.080, DK[0],DK[1],DK[2],    .30),
-  surf(boxPart(.18,.028,.028, .420,.192, .080, CRM[0],CRM[1],CRM[2], .30),STEELY[0],STEELY[1]),      /* bright rod */
-  surf(boxPart(.18,.028,.028, .420,.192,-.080, CRM[0],CRM[1],CRM[2], .30),STEELY[0],STEELY[1]),
-  boxPart(.25,.048,.048, .545,.137,   0, DK[0],DK[1],DK[2],    -.20),      /* stick ram */
-  boxPart(.06,.10,.13,   .840,.000,   0, DK[0],DK[1],DK[2])                /* knuckle */
+  boxPart(BL,.20,.19,  BL*.5,0,0, YEL[0],YEL[1],YEL[2],0,.94),
+  boxPart(.10,.225,.215, .05,0,0, DK[0],DK[1],DK[2]),                       /* pivot yoke */
+  boxPart(BL*.62,.022,.20, BL*.34,.104,0, YLD[0],YLD[1],YLD[2]),            /* wear strip */
+  surf(boxPart(.44,.075,.075, .30,-.145,0, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])     /* lift ram */
 ],true);
 
+/* Inner section. Its origin slides along the outer one, so at rest it is
+   swallowed by it and at full extension it stands almost clear. */
 var GEO_STICK=mergeParts([
-  boxPart(.52,.072,.078, .260,   0,   0, YEL[0],YEL[1],YEL[2],0,.88),
-  surf(boxPart(.20,.038,.038, .120,.072,   0, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),            /* bucket ram rod */
-  boxPart(.14,.048,.048, .030,.068,   0, DK[0],DK[1],DK[2]),
-  surf(boxPart(.075,.045,.038,.487,.052, .035, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),           /* linkage */
-  surf(boxPart(.075,.045,.038,.487,.052,-.035, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])
+  boxPart(BL*.98,.158,.15, BL*.49,0,0, DUS[0],DUS[1],DUS[2],0,.94),
+  boxPart(.10,.185,.175, BL*.97,0,0, DK[0],DK[1],DK[2]),                    /* headstock */
+  surf(boxPart(.20,.055,.055, BL*.86,-.10,0, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])   /* tilt ram */
 ],true);
 
-/* A British bucket rather than an American one: narrower across, deeper
-   front to back, and with a belly curved out of four plates instead of
-   two, so it holds its sand in a heap rather than on a tray. The teeth
-   have not moved - the simulation takes its sand from that exact point,
-   so moving them would move the work. */
+/* ---- a loading bucket: wide, flat-floored, a straight cutting edge and no
+   teeth. The cutting edge sits exactly where the old bucket's teeth sat, so
+   the simulation takes its sand from the same point it always did. ---- */
+var BW=.52;
 var GEO_BUCKET=mergeParts([
-  boxPart(.042,.240,.176, .014,-.058,  0,  DK[0],DK[1],DK[2],  .12),   /* back plate, taller */
-  boxPart(.082,.034,.176, .050,-.170,  0,  DK[0],DK[1],DK[2], -.92),   /* belly, upper */
-  boxPart(.086,.034,.176, .115,-.204,  0,  DK[0],DK[1],DK[2], -.44),   /* belly, lower */
-  boxPart(.108,.034,.176, .196,-.214,  0,  DK[0],DK[1],DK[2], -.11),   /* floor to the lip */
-  boxPart(.215,.215,.020, .104,-.098, .088, DK[0],DK[1],DK[2]),        /* side plates */
-  boxPart(.215,.215,.020, .104,-.098,-.088, DK[0],DK[1],DK[2]),
-  surf(boxPart(.03,.03,.176,  .020,.020,   0,  STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),
-  surf(boxPart(.05,.026,.030, .245,-.194, .060, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),          /* teeth */
-  surf(boxPart(.05,.026,.030, .245,-.194, .020, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),
-  surf(boxPart(.05,.026,.030, .245,-.194,-.020, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),
-  surf(boxPart(.05,.026,.030, .245,-.194,-.060, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])
+  boxPart(.050,.300,BW,   .016,-.095,  0, DK[0],DK[1],DK[2],  .05),        /* back plate */
+  boxPart(.110,.046,BW,   .060,-.196,  0, DK[0],DK[1],DK[2], -.82),        /* throat */
+  boxPart(.195,.046,BW,   .185,-.246,  0, DK[0],DK[1],DK[2], -.05),        /* floor */
+  boxPart(.320,.300,.024, .140,-.100, BW*.5, DK[0],DK[1],DK[2]),           /* side plate */
+  boxPart(.320,.300,.024, .140,-.100,-BW*.5, DK[0],DK[1],DK[2]),
+  boxPart(.070,.055,.19,  .026, .075,  0, DK[0],DK[1],DK[2]),              /* pivot ear */
+  surf(boxPart(.075,.028,BW*.98, .275,-.249, 0, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])  /* cutting edge */
 ],true);
 
-/* The sand it is carrying, heaped, and the colour of sand rather than the
-   colour of the bucket. A full bucket should read as full across the pit. */
 var SND=LIN3(.70,.59,.42);
 var GEO_LOAD=mergeParts([
-  boxPart(.150,.086,.150, .112,-.126, 0, SND[0],SND[1],SND[2]),
-  boxPart(.112,.048,.112, .116,-.064, 0, SND[0],SND[1],SND[2], 0, .55)
+  boxPart(.210,.150,BW*.92, .148,-.166, 0, SND[0],SND[1],SND[2]),
+  boxPart(.165,.075,BW*.70, .142,-.058, 0, SND[0],SND[1],SND[2], 0, .55)
 ]);
 
 /* far enough away that an arm is a pixel, this stands in */
@@ -2654,7 +2673,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788609527056  /* 2026-09-05 11:58 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788615182829  /* 2026-09-06 13:33 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
