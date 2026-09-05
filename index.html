@@ -670,13 +670,16 @@ Machine.prototype.step=function(dt,self){
         /* A fall of sand from the teeth to the ground, rather than a puff
            at the bucket. Where a load actually goes is the whole of what a
            filler does, and it was the one thing you could not see. */
-        if(rnd()<26*dt*dustGate){
+        /* A curtain of grains off the cutting edge, not a puff at the
+           bucket. They come out across the whole width of the edge, fall
+           fast, and are gone before they can bloom into anything cloudlike
+           - which is the difference between sand pouring and steam. */
+        if(rnd()<80*dt*dustGate){
           var fy=t.y*machLen+here;
-          /* grains falling, not a cloud: small, quick, and dropping under
-             the bucket rather than blooming out around it */
-          puff(t.x+(rnd()-0.5)*0.26*machLen, fy, t.z+(rnd()-0.5)*0.26*machLen,
-               (rnd()-0.5)*0.06*CS, -0.80*CS, (rnd()-0.5)*0.06*CS,
-               0.075*machLen, 0.30*machLen, 0.85+rnd()*0.45, 0.30);
+          var across=(rnd()-0.5)*0.52*machLen;
+          puff(t.x-Math.sin(this.ang)*across, fy, t.z+Math.cos(this.ang)*across,
+               (rnd()-0.5)*0.04*CS, -(0.95+rnd()*0.45)*CS, (rnd()-0.5)*0.04*CS,
+               0.030*machLen, 0.095*machLen, 0.45+rnd()*0.35, 0.46);
         }
       } else this.tipping=0;
       if(this.load<=0.02*CS){
@@ -1823,6 +1826,18 @@ function drawMachines(alpha){
       continue;
     }
     RIG.under.setMatrixAt(i,mU);
+    /* the wheels turn because the machine moved, and steer because it
+       turned: both read off the picture rather than sent over the wire */
+    if(wOn[i]){
+      var ddx=x-wLX[i], ddz=z-wLZ[i], dd=Math.sqrt(ddx*ddx+ddz*ddz);
+      if(dd>0.5*machLen) dd=0;                     /* it was reassigned, not travelling */
+      var fwd=(ddx*Math.cos(ang)+ddz*Math.sin(ang))>=0?1:-1;
+      wPh[i]+=fwd*dd/(WR*machLen);
+      var da=((ang-wLA[i]+Math.PI*3)%(Math.PI*2))-Math.PI;
+      var swant=da*10; if(swant>0.5) swant=0.5; else if(swant<-0.5) swant=-0.5;
+      wSt[i]+=(swant-wSt[i])*0.16;
+    } else wOn[i]=1;
+    wLX[i]=x; wLZ[i]=z; wLA[i]=ang;
     var mH=joint(_mA,mU,0,0,0,0,0);                 RIG.house.setMatrixAt(i,mH);
     var mBo=joint(_mB,mH,-0.50,0.700,-0.140,bm,0);  RIG.boom.setMatrixAt(i,mBo);
     /* the inner section slides along the outer one: a translation, not a hinge */
@@ -1844,6 +1859,11 @@ function drawMachines(alpha){
     _c.setRGB(c[0]+fl*1.8,c[1]+fl*.9,c[2]+fl*.4);
     RIG.under.setColorAt(i,_c); RIG.house.setColorAt(i,_c); RIG.boom.setColorAt(i,_c);
     RIG.stick.setColorAt(i,_c); RIG.bucket.setColorAt(i,_c);
+    for(var w=0;w<4;w++){
+      var wx=(w<2)?0.38:-0.38, wz=(w&1)?0.245:-0.245;
+      var mW=joint(_mB,mU,wx,AX,wz,-wPh[i],(w<2)?wSt[i]:0);
+      RIG.wheel.setMatrixAt(i*4+w,mW); RIG.wheel.setColorAt(i*4+w,_c);
+    }
     if(typeof LAMPS!=="undefined" && nightFactor>0.02){
       LAMPS.setMatrixAt(i,mH);
       /* the pool falls on the sand ahead of it, flat, whatever the machine is doing */
@@ -1857,7 +1877,7 @@ function drawMachines(alpha){
   }
   if(articulate){
     for(var k=0;k<RIGLIST.length;k++){
-      var m=RIGLIST[k]; m.count=n; m.instanceMatrix.needsUpdate=true;
+      var m=RIGLIST[k]; m.count=(m===RIG.wheel)?n*4:n; m.instanceMatrix.needsUpdate=true;
       if(m.instanceColor) m.instanceColor.needsUpdate=true;
     }
     BLOB.count=0;
@@ -1958,20 +1978,26 @@ var UNDER=[
   boxPart(.26,.10,.50,    .38,AX,   0,  DK[0],DK[1],DK[2]),                 /* front axle */
   boxPart(.30,.10,.34,   -.54,AX+.02,0, DK[0],DK[1],DK[2],0,.88)            /* rear counterweight */
 ];
+var GEO_UNDER=mergeParts(UNDER,true);
+
+/* A wheel on its own, about its own axle, so it can turn. It used to be
+   baked into the chassis with the other three, which meant a machine could
+   travel a kilometre without any of them moving. Spin and steer are both
+   worked out by the renderer from how far the machine actually went and how
+   fast it actually turned - the simulation is not asked and does not care. */
+var WHEEL=[
+  surf(cylPart(WR,WW,0,0,0,BLK[0],BLK[1],BLK[2],16),RUBBER[0],RUBBER[1]),          /* tyre */
+  surf(cylPart(WR*.55,WW*1.12,0,0,0,YEL[0],YEL[1],YEL[2],14),STEELY[0],STEELY[1]), /* rim */
+  surf(cylPart(WR*.24,WW*1.20,0,0,0,STL[0],STL[1],STL[2],10),STEELY[0],STEELY[1])  /* hub */
+];
 (function(){
-  for(var sx=-1;sx<=1;sx+=2) for(var sz=-1;sz<=1;sz+=2){
-    var x=sx*.38, z=sz*.245;
-    UNDER.push(surf(cylPart(WR,WW,x,AX,z,BLK[0],BLK[1],BLK[2],16),RUBBER[0],RUBBER[1]));      /* tyre */
-    UNDER.push(surf(cylPart(WR*.55,WW*1.12,x,AX,z,YEL[0],YEL[1],YEL[2],14),STEELY[0],STEELY[1])); /* rim */
-    UNDER.push(surf(cylPart(WR*.24,WW*1.20,x,AX,z,STL[0],STL[1],STL[2],10),STEELY[0],STEELY[1])); /* hub */
-    for(var t=0;t<9;t++){                                                    /* tread blocks */
-      var a=t/9*6.2832;
-      UNDER.push(surf(boxPart(.055,.045,WW*1.04, x+Math.cos(a)*WR*.94, AX+Math.sin(a)*WR*.94, z,
-                              BLK[0],BLK[1],BLK[2],a),RUBBER[0],RUBBER[1]));
-    }
+  for(var t=0;t<9;t++){                                                    /* tread blocks */
+    var a=t/9*6.2832;
+    WHEEL.push(surf(boxPart(.055,.045,WW*1.04, Math.cos(a)*WR*.94, Math.sin(a)*WR*.94, 0,
+                            BLK[0],BLK[1],BLK[2],a),RUBBER[0],RUBBER[1]));
   }
 })();
-var GEO_UNDER=mergeParts(UNDER,true);
+var GEO_WHEEL=mergeParts(WHEEL,true);
 
 /* ---- body: engine on the boom side, cab on the other, boom pivot at the rear ----
    A Loadall carries its boom down the right-hand side and the operator sits
@@ -2042,10 +2068,18 @@ var GEO_BUCKET=mergeParts([
    and heaped proud of the rim, because a full bucket has to read as full
    from further away than you would think. */
 var SND=LIN3(.80,.60,.30);
+/* Sand heaps; it does not stack. Three rings of a cone, nine-sided, wider
+   across the bucket than fore-and-aft, which is the shape a loader bucket
+   holds. It was three boxes and read as three boxes. */
+function heapPart(rb,rt,hh,tx,ty,tz,sx,sz,r,g,b){
+  var cg=new THREE.CylinderGeometry(rt,rb,hh,9,1,false);
+  cg.scale(sx,1,sz); cg.translate(tx,ty,tz);
+  return {g:cg,c:[r,g,b]};
+}
 var GEO_LOAD=mergeParts([
-  boxPart(.215,.165,BW*.94, .150,-.158, 0, SND[0],SND[1],SND[2]),
-  boxPart(.180,.095,BW*.76, .148,-.038, 0, SND[0],SND[1],SND[2], 0, .60),
-  boxPart(.120,.055,BW*.50, .145, .022, 0, SND[0],SND[1],SND[2], 0, .50)
+  heapPart(.125,.118,.115, .150,-.168, 0, 1.0, 1.95, SND[0],SND[1],SND[2]),
+  heapPart(.112,.075,.085, .150,-.070, 0, 1.0, 1.80, SND[0],SND[1],SND[2]),
+  heapPart(.068,.010,.060, .150, .002, 0, 1.0, 1.55, SND[0],SND[1],SND[2])
 ]);
 
 /* far enough away that an arm is a pixel, this stands in */
@@ -2079,25 +2113,31 @@ machMat.onBeforeCompile=function(sh){
         "    reflectedLight.indirectDiffuse*=1.0-crease*0.30;\n"+
         "  }");
 };
-function mkInst(g){
-  var m=new THREE.InstancedMesh(g,machMat,MAXI);
+function mkInst(g,mult){
+  var CAP=MAXI*(mult||1);
+  var m=new THREE.InstancedMesh(g,machMat,CAP);
   m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   m.frustumCulled=false; m.castShadow=true; m.receiveShadow=true;
   /* setColorAt sizes the colour buffer from mesh.count, so the count has to be
      full while it is being filled. Filling it at count 0 leaves a zero-length
      attribute, which still defines USE_INSTANCING_COLOR and kills the colour
      pass while the depth pass carries on: shadows with nothing casting them. */
-  m.count=MAXI;
+  m.count=CAP;
   var col=new THREE.Color(1,1,1);
-  for(var i=0;i<MAXI;i++) m.setColorAt(i,col);
+  for(var i=0;i<CAP;i++) m.setColorAt(i,col);
   m.instanceColor.setUsage(THREE.DynamicDrawUsage);
   m.count=0;
   scene.add(m); return m;
 }
 var RIG={under:mkInst(GEO_UNDER),house:mkInst(GEO_HOUSE),boom:mkInst(GEO_BOOM),
-         stick:mkInst(GEO_STICK),bucket:mkInst(GEO_BUCKET),load:mkInst(GEO_LOAD)};
+         stick:mkInst(GEO_STICK),bucket:mkInst(GEO_BUCKET),load:mkInst(GEO_LOAD),
+         wheel:mkInst(GEO_WHEEL,4)};
 var BLOB=mkInst(GEO_BLOB);
-var RIGLIST=[RIG.under,RIG.house,RIG.boom,RIG.stick,RIG.bucket,RIG.load];
+var RIGLIST=[RIG.under,RIG.house,RIG.boom,RIG.stick,RIG.bucket,RIG.load,RIG.wheel];
+/* how far each wheel has rolled and how hard it is steering, kept here
+   because it is a fact about the picture and not about the world */
+var wPh=new Float32Array(MAXI), wLX=new Float32Array(MAXI), wLZ=new Float32Array(MAXI),
+    wLA=new Float32Array(MAXI), wSt=new Float32Array(MAXI), wOn=new Uint8Array(MAXI);
 var articulate=true;
 function setDetail(on){
   articulate=on;
@@ -2706,7 +2746,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788620814982  /* 2026-09-06 15:06 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788622677212  /* 2026-09-07 15:37 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
