@@ -619,9 +619,14 @@ Machine.prototype.step=function(dt,self){
         var cut=takeFrom(t.x,t.z,0.55*CS,Math.min(amt,this.cap-this.load));
         this.load+=cut; this.got+=cut;
         this.digging=1;
-        if(rnd()<9*dt*dustGate)
-          puff(t.x,groundAt+0.05*machLen,t.z,(rnd()-0.5)*0.7*CS,0.25*CS,(rnd()-0.5)*0.7*CS,
-               0.30*machLen,1.5*machLen,1.6+rnd()*1.4,0.20);
+        /* Dust is a veil over the work, not a substitute for it. These
+           sprites grow as they drift, and at a machine length and a half
+           across they were nine metres of near-opaque white sitting on the
+           ground - you could not see the bucket through them, let alone
+           what was in it. Smaller, thinner, shorter-lived. */
+        if(rnd()<7*dt*dustGate)
+          puff(t.x,groundAt+0.05*machLen,t.z,(rnd()-0.5)*0.5*CS,0.18*CS,(rnd()-0.5)*0.5*CS,
+               0.13*machLen,0.62*machLen,1.1+rnd()*0.8,0.13);
       } else this.digging=0;
       /* two full strokes and nothing has come up: this is rock, or it has
          already been dug to nothing. Not a reason to give up on the purpose
@@ -654,11 +659,13 @@ Machine.prototype.step=function(dt,self){
         /* A fall of sand from the teeth to the ground, rather than a puff
            at the bucket. Where a load actually goes is the whole of what a
            filler does, and it was the one thing you could not see. */
-        if(rnd()<30*dt*dustGate){
+        if(rnd()<26*dt*dustGate){
           var fy=t.y*machLen+here;
-          puff(t.x+(rnd()-0.5)*0.30*machLen, fy, t.z+(rnd()-0.5)*0.30*machLen,
-               (rnd()-0.5)*0.08*CS, -0.70*CS, (rnd()-0.5)*0.08*CS,
-               0.22*machLen, 1.75*machLen, 2.8+rnd()*1.2, 0.60);
+          /* grains falling, not a cloud: small, quick, and dropping under
+             the bucket rather than blooming out around it */
+          puff(t.x+(rnd()-0.5)*0.26*machLen, fy, t.z+(rnd()-0.5)*0.26*machLen,
+               (rnd()-0.5)*0.06*CS, -0.80*CS, (rnd()-0.5)*0.06*CS,
+               0.075*machLen, 0.30*machLen, 0.85+rnd()*0.45, 0.30);
         }
       } else this.tipping=0;
       if(this.load<=0.02*CS){
@@ -772,7 +779,7 @@ function trackGround(a,dt){
     /* soft ground ruts; ground already compacted barely gives */
     if(a.moving>0 && rnd()<5*dt*dustGate)
       puff(wx,h[i]+0.04*machLen,wz,-ca*0.3*CS+(rnd()-0.5)*0.3*CS,0.10*CS,-sa*0.3*CS+(rnd()-0.5)*0.3*CS,
-           0.22*machLen,1.3*machLen,1.4+rnd()*1.2,0.13);
+           0.11*machLen,0.55*machLen,1.0+rnd()*0.8,0.09);
     var give=0.02*press*(1-w*0.85);
     if(give<=0) continue;
     if(give>h[i]*0.04) give=h[i]*0.04;
@@ -2011,10 +2018,14 @@ var GEO_BUCKET=mergeParts([
   surf(boxPart(.075,.028,BW*.98, .275,-.249, 0, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1])  /* cutting edge */
 ],true);
 
-var SND=LIN3(.70,.59,.42);
+/* The sand it is carrying. Warmer and darker than the bucket it sits in,
+   and heaped proud of the rim, because a full bucket has to read as full
+   from further away than you would think. */
+var SND=LIN3(.80,.60,.30);
 var GEO_LOAD=mergeParts([
-  boxPart(.210,.150,BW*.92, .148,-.166, 0, SND[0],SND[1],SND[2]),
-  boxPart(.165,.075,BW*.70, .142,-.058, 0, SND[0],SND[1],SND[2], 0, .55)
+  boxPart(.215,.165,BW*.94, .150,-.158, 0, SND[0],SND[1],SND[2]),
+  boxPart(.180,.095,BW*.76, .148,-.038, 0, SND[0],SND[1],SND[2], 0, .60),
+  boxPart(.120,.055,BW*.50, .145, .022, 0, SND[0],SND[1],SND[2], 0, .50)
 ]);
 
 /* far enough away that an arm is a pixel, this stands in */
@@ -2153,7 +2164,7 @@ var dustGeo=null, dustMat=null, dustMesh=null, aPos=null, aSize=null, aAlpha=nul
   dustGeo.instanceCount=MAXD;
   dustMat=new THREE.ShaderMaterial({
     uniforms:{
-      uColor:{value:new THREE.Color(0.87,0.79,0.65)},
+      uColor:{value:new THREE.Color(0.78,0.64,0.44)},   /* sand, not steam */
       uFogColor:{value:new THREE.Color(0.24,0.20,0.16)},
       uFogD:{value:0.004}
     },
@@ -2675,7 +2686,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1788616040498  /* 2026-09-06 13:47 UTC */;                 /* stamped in when this file was made */
+var BUILT=1788617638036  /* 2026-09-06 14:13 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
