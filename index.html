@@ -325,6 +325,51 @@ var _buf=new Int32Array(4096);
 var DRIVE=1.40, GRADE=Math.tan(30*Math.PI/180), SLIP=6.0;
 var DETOUR=[0, 0.45, -0.45, 0.95, -0.95, 1.55, -1.55];
 
+/* ---------------------------------------------------------
+   Pushing.
+
+   A machine can move sand two ways. It can dig a bucket, carry it and tip
+   it, which is what it has always done. Or it can put the bucket on the
+   ground and drive, which fills the blade as it goes and leaves the load
+   where the machine stops. Both purposes get both ways; only the goal
+   differs, which is the rule the whole piece stands on.
+
+   What makes the second one interesting is that it cannot always be done.
+   Sand on the blade is dead weight shoved along the ground, and it eats
+   the machine's grip exactly as a slope does. So a full blade will not go
+   up anything much past eighteen degrees, while the same machine empty
+   will climb thirty. A raiser therefore shoves sand up its mound while the
+   mound is shallow and has to start lifting once the flank steepens - and
+   nothing here says so. The sand decides when, by standing up.
+
+   PUSH_RES is how much of the machine's grip a full blade eats. PUSH_CUT
+   is the deepest it will cut when it has grip to spare - it is not a
+   schedule, it is a ceiling; how deep it actually cuts is whatever the
+   ground it is crossing leaves it the traction for. PUSH_SPILL is the
+   fraction of the load that rolls off the ends of the blade per metre
+   travelled, which is why a long push arrives with less than it gathered
+   and why nobody pushes sand across the pit.
+
+   PUSH_CUT is not free either: a blade fills over about four times its own
+   width, which is what dozing looks like, so the deepest cut is a bucket
+   spread over that distance - 26 cubic metres, a blade three metres wide,
+   twelve metres of travel. And how deep it cuts on any given metre is not
+   a schedule but simply that ceiling times whatever grip it has left, so
+   the cut thins away as the blade fills and stops altogether on a bank.
+   Nothing charges the machine for cutting: what it cuts becomes load, and
+   load is already what eats its grip.
+   --------------------------------------------------------- */
+var PUSH_RES=0.55, PUSH_SPILL=0.004, BLADE_W=0.52;
+var PUSH_CUT=0.70;
+/* What is left of a machine's grip once the slope and whatever is on the
+   blade have taken theirs. One expression, and it is used three times: to
+   drive, to decide how deep to cut, and to decide whether pushing is worth
+   doing at all. That is the whole of the push/carry decision. */
+function traction(climb,bladeFrac){
+  var g=1-climb/GRADE-PUSH_RES*bladeFrac;
+  return g>1.15?1.15:(g<0?0:g);
+}
+
 var RAISE=0, FILL=1;
 var COL_A=[1.55,.62,.22], COL_B=[.30,1.25,1.15], COL_N=[1,1,1];
 
@@ -344,6 +389,11 @@ function Machine(role,atGate,px,pz){
   this.ring=rnd()*6.2832; this.sx=this.x; this.sz=this.z;
   this.ang=rnd()*Math.PI*2;
   this.load=0; this.got=0; this.idle=0; this.cap=BUCKET/(CS*CS); this.state="go"; this.mode="scoop"; this.flash=0;
+  /* set when a push ended having moved next to nothing - the ground beat
+     it - and cleared again by the next bucket that arrives whole. It stops
+     a machine trying the same impossible shove over and over, without
+     anybody writing down what an impossible shove is. */
+  this.noPush=0; this.lifted=0;
   this.boom=-0.30; this.stick=0; this.buck=0.30; this.slew=0; this.stroke=rnd()*2;
   this.wt=rnd()*10; this.ph=rnd()*6.28; this.life=8+rnd()*32;
   this.moving=0; this.digging=0; this.tipping=0;
@@ -375,10 +425,30 @@ Machine.prototype.pickScoop=function(){
   var cone=(drop>0)?drop/Math.tan(reposeDeg*Math.PI/180):0;
   var R=Math.max(2.2*machLen,Math.min(HALF*0.45,cone));
   var lim=HALF-2*CS;
-  this.tx=Math.max(-lim,Math.min(lim,this.sx+Math.cos(this.ring)*R));
-  this.tz=Math.max(-lim,Math.min(lim,this.sz+Math.sin(this.ring)*R));
+  /* Two rings, not one. The first is the old one - as far out as the sand
+     runs back, which is the distance that stops a machine moving the same
+     grains up and down. The second is as far out as a blade needs to fill,
+     which is a distance the machine knows because it is its own bucket
+     over its own blade. Both are reckoned and the better one taken, so a
+     raiser on flat ground goes out far enough to shove a full blade home,
+     and one on a mound that has grown steep finds the far ring worthless
+     and comes back to digging. Nobody wrote the changeover. */
+  var fillR=this.cap*CS*CS/(BLADE_W*machLen*PUSH_CUT*traction(0,0.5));
+  var bR=R, bRate=-1, bPush=false;
+  for(var c=0;c<2;c++){
+    var rr=c?Math.max(R,Math.min(HALF*0.45,fillR)):R;
+    var cx=Math.max(-lim,Math.min(lim,this.sx+Math.cos(this.ring)*rr));
+    var cz=Math.max(-lim,Math.min(lim,this.sz+Math.sin(this.ring)*rr));
+    var rk=this.reckon(cx,cz,this.sx,this.sz,this.cap);
+    if(rk.rate>bRate){ bRate=rk.rate; bR=rr; bPush=rk.push; }
+  }
+  this.tx=Math.max(-lim,Math.min(lim,this.sx+Math.cos(this.ring)*bR));
+  this.tz=Math.max(-lim,Math.min(lim,this.sz+Math.sin(this.ring)*bR));
   this.dgx=this.tx; this.dgz=this.tz;
-  this.state="go"; this.mode="scoop";
+  /* the two ends of the job, named the same way a filler names them, so
+     that pushing does not need to know which purpose it is serving */
+  this.ux=this.tx; this.uz=this.tz; this.hx=this.sx; this.hz=this.sz;
+  this.state="go"; this.mode=bPush?"toPush":"scoop";
 };
 Machine.prototype.relocate=function(){
   var bx=0,bz=0,bh=-1e9;
@@ -421,6 +491,11 @@ Machine.prototype.relocate=function(){
    is that it lies below the ground that surrounds it. That is what relief
    measures, and the difference in relief between the two ends of a job is
    how much unevenness one bucket actually closes. */
+/* NOTE ON WHAT FOLLOWS: since a machine can now push as well as carry, the
+   filler weighs each candidate pair by whichever way of moving it is
+   quicker, so it does not only choose *where* to work but *how* - and,
+   because a short downhill pair is worth much more to a pusher than to a
+   carrier, it starts choosing different pairs. */
 function reliefAt(x,z){
   var r=38, s=0, n=0;                  /* metres, about as far as a bucket is worth carrying */
   for(var a=0;a<8;a++){
@@ -430,14 +505,85 @@ function reliefAt(x,z){
   }
   return n?hAt(x,z)-s/n:0;
 }
+/* What a job is worth, in sand moved per second, by whichever of the two
+   ways of moving it is better - and which of them that is.
+
+   Carrying costs a dig, a tip, the drive out and the drive back. Pushing
+   costs neither dig nor tip, because the blade fills as it travels and the
+   load is already on the ground when it stops; but it drags its load the
+   whole way, and it leaks. Nothing here is a rule about slopes. The slope
+   enters through `traction`, the same expression that decides whether the
+   machine can move at all, and a push up a steep face simply takes so long
+   that the arithmetic refuses it. On the flat, pushing wins under about
+   twenty-five metres. Uphill that distance shortens fast, and somewhere
+   around eighteen degrees it goes below the length of the machine and
+   pushing stops being possible at all. Those numbers are consequences.
+   Nobody chose them and changing the angle of repose changes them. */
+var _rk={rate:0,push:false};
+Machine.prototype.reckon=function(ux,uz,hx,hz,gain){
+  var ax=ux-this.x, az=uz-this.z, d1=Math.sqrt(ax*ax+az*az);
+  var bx=hx-ux, bz=hz-uz, d2=Math.sqrt(bx*bx+bz*bz);
+  var cyc=2/(0.17*rateMul);                    /* a dig and a tip */
+  var climb=(d2>1e-6)?(hAt(hx,hz)-hAt(ux,uz))/d2:0;
+  var g0=traction(climb,0), gb=traction(-climb,0), gp=traction(climb,0.5);
+  var app=d1/DRIVE;
+  var tOut=(g0>0.02)?d2/(DRIVE*g0):1e9, tBack=(gb>0.02)?d2/(DRIVE*gb):1e9;
+  var rc=gain/(app+cyc+tOut+tBack), rp=0;
+  if(!this.noPush && d2>=1.2*machLen && gp>0.02){
+    /* A push does not arrive with a bucketful because it was asked to. It
+       arrives with whatever the blade gathered on the way, which is its
+       width times how deep it could afford to cut times how far it ran -
+       and a short shove therefore turns up half empty. Reckoning on a full
+       blade was the one dishonest number in here, and it made the machine
+       choose twelve-metre shoves that gathered two thirds of a load. */
+    var fill=BLADE_W*machLen*PUSH_CUT*gp*d2/(CS*CS);
+    var frac=fill/this.cap; if(frac>1) frac=1;
+    rp=gain*frac*Math.exp(-PUSH_SPILL*d2)/(app+d2/(DRIVE*gp)+tBack);
+  }
+  _rk.push=rp>rc; _rk.rate=_rk.push?rp:rc;
+  return _rk;
+};
+/* Once a second, while it is shoving: is this still the quickest way to get
+   what is in front of the blade to the other end?
+
+   The load is already aboard, so the alternative is not to start the job
+   again - it is to pick the bucket up off the ground and drive the rest of
+   the way, which costs a tip at the far end but takes the dead weight off
+   the sand. On the flat the answer stays no and the machine keeps shoving.
+   On a bank the answer turns over, and the machine lifts. That is the
+   whole of the transition, and there is not a slope anywhere in it: the
+   slope enters through `traction`, as it does everywhere else. A raiser
+   pushing sand up a mound it is itself making will cross this line without
+   ever being told the mound got steep. */
+Machine.prototype.stillWorthShoving=function(){
+  var dx=this.tx-this.x, dz=this.tz-this.z, d=Math.sqrt(dx*dx+dz*dz);
+  if(d<1e-6) return false;
+  var climb=(hAt(this.tx,this.tz)-hAt(this.x,this.z))/d;
+  var gp=traction(climb,this.load/this.cap), gc=traction(climb,0);
+  if(gp<=0.02) return false;                       /* the bank has stopped it */
+  if(gc<=0.02) return true;                        /* it could not drive it either */
+  /* Shoving on is slower over the ground but it is still gathering; lifting
+     is quicker and gathers nothing. Both end with the load laid down at the
+     far end, so the two are comparable as they stand. What falls out is
+     that a machine shoves while the blade is filling and lifts once it is
+     full - unless the far end is nearer than a blade takes to fill, in
+     which case it shoves the whole way and never lifts at all, which is
+     the short haul into a hollow. And on a bank the cut thins to nothing,
+     so there is nothing left to gather and it lifts early. */
+  var room=this.cap-this.load;
+  var more=BLADE_W*machLen*PUSH_CUT*gp*d/(CS*CS); if(more>room) more=room;
+  var rPush=(this.load+more)*Math.exp(-PUSH_SPILL*d)/(d/(DRIVE*gp));
+  var rLift=this.load/(d/(DRIVE*gc)+1/(0.17*rateMul));   /* the drive, and the tip */
+  return rPush>rLift;
+};
 Machine.prototype.jobPays=function(){
   var iu=cellAt(this.ux,this.uz);
   if(iu<0) return false;
   return (reliefAt(this.ux,this.uz)-reliefAt(this.hx,this.hz))>0;
 };
 Machine.prototype.newJob=function(){
-  var lim=HALF-2*CS, cyc=2/(0.17*rateMul);
-  var best=-1,bhx=null,bhz=null,bux=null,buz=null;
+  var lim=HALF-2*CS;
+  var best=-1,bhx=null,bhz=null,bux=null,buz=null,bpush=false;
   for(var k=0;k<28;k++){
     var R=(rnd()<0.03)?frontier():(3+this.crowd*12)*machLen*(0.5+rnd()*rnd()*6);
     var ux=this.x+(rnd()*2-1)*R, uz=this.z+(rnd()*2-1)*R;
@@ -462,17 +608,15 @@ Machine.prototype.newJob=function(){
     if(gap<=0) continue;                            /* that way is uphill: not levelling */
     var gain=Math.min(this.cap,(reliefAt(ux,uz)-reliefAt(hx,hz))*0.5);
     if(gain<=0) continue;               /* neither a hump taken down nor a hollow filled */
-    var d1=Math.sqrt((ux-this.x)*(ux-this.x)+(uz-this.z)*(uz-this.z));
-    var d2=Math.sqrt((hx-ux)*(hx-ux)+(hz-uz)*(hz-uz));
-    var sc=gain/((d1+2*d2)/DRIVE+cyc);
-    sc-=densAt(ux,uz)*this.crowd*0.0003*CS;         /* and not shoulder to shoulder */
-    if(sc>best){ best=sc; bhx=hx; bhz=hz; bux=ux; buz=uz; }
+    var rk=this.reckon(ux,uz,hx,hz,gain);
+    var sc=rk.rate-densAt(ux,uz)*this.crowd*0.0003*CS;   /* and not shoulder to shoulder */
+    if(sc>best){ best=sc; bhx=hx; bhz=hz; bux=ux; buz=uz; bpush=rk.push; }
   }
   if(bhx===null){
     /* genuinely nothing to do: it stands where it is, rather than miming */
-    this.hx=this.x; this.hz=this.z; this.ux=this.x; this.uz=this.z; this.idle=1;
+    this.hx=this.x; this.hz=this.z; this.ux=this.x; this.uz=this.z; this.idle=1; bpush=false;
   }else{ this.hx=bhx; this.hz=bhz; this.ux=bux; this.uz=buz; this.idle=0; }
-  this.tx=this.ux; this.tz=this.uz; this.state="go"; this.mode="scoop";
+  this.tx=this.ux; this.tz=this.uz; this.state="go"; this.mode=bpush?"toPush":"scoop";
 };
 /* ---------------------------------------------------------
    Where the teeth actually are.
@@ -491,7 +635,7 @@ var L_BASE=1.30, E_MAX=0.90, PITCH_LO=-0.80, PITCH_HI=1.15;
    so reaching the ground in front of it wants a good deal of down-pitch.
    A limit of a quarter-turn was not enough and the teeth spent a third of
    every dig in the air. */
-var P_BOOMX=-0.50, P_BOOMY=0.700, P_BOOMZ=-0.140;
+var P_BOOMX=-0.50, P_BOOMY=0.700, P_BOOMZ=0.140;   /* the boom is on the machine's right, as every Loadall's is */
 var TOOTH_X=0.275, TOOTH_Y=-0.249;     /* the cutting edge, in the bucket's own frame */
 var _tw={x:0,z:0,y:0};
 function toothWorld(a){
@@ -521,6 +665,21 @@ function armTo(tx,ty){
   return _ik;
 }
 
+/* The blade on the deck. Boom pulled right in, bucket nose down, the
+   cutting edge a given depth below whatever the ground under it happens to
+   be. The same pose serves pushing and letting go at the end of a push;
+   only the roll of the bucket differs. Returns where the teeth actually
+   are, which is a tick behind where they have been asked to be, because
+   hydraulics are not quick. */
+Machine.prototype.bladePose=function(here,depth,roll){
+  var t=toothWorld(this), gA=hAt(t.x,t.z);
+  var ty=(gA-here-depth)/machLen;
+  var k=armTo(0.85-P_BOOMX-(TOOTH_X*Math.cos(roll)-TOOTH_Y*Math.sin(roll)),
+              ty-P_BOOMY-(TOOTH_X*Math.sin(roll)+TOOTH_Y*Math.cos(roll)));
+  this.tbA=k.b; this.tsA=k.s; this.tkA=roll-k.b;
+  return t;
+};
+
 Machine.prototype.step=function(dt,self){
   avoid(this,self);
   var here=hAt(this.x,this.z);
@@ -528,8 +687,20 @@ Machine.prototype.step=function(dt,self){
   var arrive=Math.max(1.20*machLen,1.2*CS);
 
   if(this.state==="go"){
-    if(dist<arrive) this.state="work";
-    else{
+    if(dist<arrive){
+      /* Arriving at the head of a push is not arriving anywhere: the blade
+         goes down and the machine keeps going, to the other end of the job
+         or until the ground stops it. There is no separate act of digging
+         and none of tipping. */
+      if(this.mode==="toPush"){
+        this.mode="push"; this.tx=this.hx; this.tz=this.hz;
+        this.stroke=0; this.got=0;
+        dx=this.tx-this.x; dz=this.tz-this.z; dist=Math.sqrt(dx*dx+dz*dz);
+        if(dist<arrive) this.state="work";
+      }
+      else this.state="work";
+    }
+    if(this.state==="go"){
       var wx=dx/dist+_avX*1.6, wz=dz/dist+_avZ*1.6;
       var want=Math.atan2(wz,wx);
       var g=gradAt(this.x,this.z);
@@ -550,16 +721,116 @@ Machine.prototype.step=function(dt,self){
       var diff=((ba-this.ang+Math.PI*3)%(Math.PI*2))-Math.PI;
       this.ang+=Math.min(Math.abs(diff),0.55*dt)*(diff<0?-1:1);   /* tracks turn slowly */
       var climb=Math.cos(this.ang)*g.x+Math.sin(this.ang)*g.z;
-      var gf=1-climb/GRADE; if(gf>1.15) gf=1.15; else if(gf<0) gf=0;
+      var pushing=(this.mode==="push")&&!this.idle;
+      var gf=traction(climb,pushing?this.load/this.cap:0);
+      /* How deep the blade cuts is not a schedule. It is whatever grip is
+         left over once the slope and the load already on the blade have
+         taken theirs, and the cutting itself takes some of what remains.
+         So the same machine gouges on the flat with an empty blade, cuts
+         nothing at all while shoving a full one up a bank, and thins its
+         own cut away as it fills - which is what the shallow scrape behind
+         a dozing machine actually is. */
+      var cutD=pushing?PUSH_CUT*gf:0;
       var sp=DRIVE*gf*_avBrake*dt;
       this.x+=Math.cos(this.ang)*sp; this.z+=Math.sin(this.ang)*sp;
       this.moving=sp/dt;
+      if(pushing){
+        var tp=this.bladePose(here,cutD,-0.12);
+        var gA=hAt(tp.x,tp.z);
+        this.digging=0; this.tipping=0; this.slewT=0;
+        if(sp>0 && tp.y*machLen+here<=gA+0.06*machLen){
+          if(cutD>0){
+            /* width times depth times how far it went, which is cubic
+               metres, which becomes a height on a cell the same way a
+               bucket does */
+            var vol=BLADE_W*machLen*cutD*sp/(CS*CS);
+            var room=this.cap-this.load;
+            var cut=takeFrom(tp.x,tp.z,0.55*CS,vol<room?vol:room);
+            this.load+=cut; this.got+=cut;
+            if(cut>0) this.digging=1;
+          }
+          /* and sand rolls off the ends of the blade the whole way along,
+             which is the whole reason nobody pushes sand across the pit */
+          if(this.load>0){
+            var lost=this.load*PUSH_SPILL*sp;
+            if(lost>0) this.load-=giveTo(tp.x,tp.z,0.75*CS,lost);
+          }
+          if(rnd()<9*dt*dustGate)
+            puff(tp.x,gA+0.04*machLen,tp.z,(rnd()-0.5)*0.6*CS,0.14*CS,(rnd()-0.5)*0.6*CS,
+                 0.14*machLen,0.66*machLen,1.0+rnd()*0.7,0.12);
+        }
+        /* and every second it asks whether shoving is still the way */
+        this.stroke+=dt;
+        if(this.stroke>1.0){
+          this.stroke=0;
+          if(!this.stillWorthShoving()){
+            if(this.load<0.10*this.cap){
+              /* it has next to nothing and cannot get on: put it down here */
+              this.state="work"; this.moving=0;
+            }else{
+              /* up off the ground, and drive the rest of the way. This is a
+                 machine giving up on shoving in the middle of a shove, and
+                 it is the only place in the piece where one way of working
+                 turns into the other with the load still in hand. */
+              /* a blade that filled and was then lifted is a shove that
+                 worked; one abandoned half full is one the ground beat */
+              this.lifted=(this.load<0.90*this.cap)?1:0;
+              this.mode="dump"; this.digging=0; this.stroke=0; this.got=0;
+            }
+          }
+        }
+      }
       /* nowhere it can go. It works where it stands, which for a raiser
-         means cutting away the floor it is standing on. */
+         means cutting away the floor it is standing on, and for a machine
+         with its blade down means putting the load down here: the bank has
+         beaten it, and that is the only thing that ever tells it so. */
       if(gf<=0.02){ this.state="work"; this.moving=0; }
     }
   }
-  if(this.state==="work"){
+  if(this.state==="work" && this.mode==="toPush"){
+    /* It could not get to the head of the cut at all - a face it cannot
+       climb is in the way. It never started, so there is nothing to put
+       down; it takes the shove off the table and thinks again. Without
+       this it fell into the tipping code with an empty bucket and mimed a
+       tip, which is exactly the miming the filler was cured of. */
+    this.noPush=1; this.digging=0; this.tipping=0; this.stroke=0;
+    if(this.role===RAISE){ this.ring+=0.9+rnd()*0.5; this.pickScoop(); }
+    else this.newJob();
+  }
+  else if(this.state==="work" && this.mode==="push"){
+    /* The end of a push, wherever it came - the far end of the job, or the
+       point on the bank where the machine ran out of grip. There is
+       nothing to tip: the sand is already lying on the ground in front of
+       the blade, and all the machine does is roll the bucket forward and
+       let go of it. */
+    this.moving=0; this.digging=0; this.stroke+=dt;
+    var roll=-0.12+0.62*Math.min(1,this.stroke/1.6);
+    var ts=this.bladePose(here,-0.04,roll);
+    if(this.load>0){
+      var out=this.cap*0.55*rateMul*dt;
+      this.load-=giveTo(ts.x,ts.z,0.7*CS,out<this.load?out:this.load);
+      this.tipping=1;
+      if(rnd()<50*dt*dustGate){
+        var acr=(rnd()-0.5)*0.6*machLen;
+        puff(ts.x-Math.sin(this.ang)*acr, ts.y*machLen+here, ts.z+Math.cos(this.ang)*acr,
+             (rnd()-0.5)*0.05*CS, -(0.7+rnd()*0.4)*CS, (rnd()-0.5)*0.05*CS,
+             0.030*machLen, 0.10*machLen, 0.45+rnd()*0.3, 0.42);
+      }
+    } else this.tipping=0;
+    if(this.load<=0.02*CS || this.stroke>6){
+      if(this.load>0) this.load-=giveTo(ts.x,ts.z,0.7*CS,this.load);
+      this.tipping=0; this.stroke=0;
+      /* A push that gathered next to nothing was a push that should not
+         have been attempted, and the machine has just been told so by the
+         ground rather than by a rule. It carries the next one. */
+      this.noPush = this.got<0.15*this.cap ? 1 : 0;
+      this.got=0;
+      if(this.role===RAISE){ this.ring+=0.9+rnd()*0.5; this.pickScoop(); }
+      else if(this.jobPays()){ this.mode="scoop"; this.tx=this.ux; this.tz=this.uz; this.state="go"; }
+      else this.newJob();
+    }
+  }
+  else if(this.state==="work"){
     this.moving=0;
     /* There is no slewing house on a telehandler. It faces its work with the
        whole machine, turning on the spot at the same rate its tracks used
@@ -685,6 +956,10 @@ Machine.prototype.step=function(dt,self){
       if(this.load<=0.02*CS){
         if(this.load>0) this.load-=giveTo(t.x,t.z,0.55*CS,this.load);
         this.mode="scoop"; this.stroke=0; this.tipping=0;
+        /* a bucket that arrived whole earns the machine the right to try
+           shoving the next one again - unless this bucket only arrived
+           whole because the shove was abandoned and it was carried */
+        this.noPush=this.lifted?1:0; this.lifted=0;
         if(this.role===RAISE){this.ring+=0.9+rnd()*0.5; this.pickScoop();}
         /* Back to the same cut while it still pays. Choosing a fresh pair
            of places after every single bucket is what made a filler look
@@ -694,12 +969,15 @@ Machine.prototype.step=function(dt,self){
            pair stops paying when the high end no longer stands prouder of
            its surroundings than the low end lies below its own, which is
            the same reckoning that chose the pair. No new rule. */
-        else if(this.jobPays()){ this.tx=this.ux; this.tz=this.uz; this.state="go"; }
+        else if(this.jobPays()){
+          this.tx=this.ux; this.tz=this.uz; this.state="go";
+          this.mode=this.reckon(this.ux,this.uz,this.hx,this.hz,this.cap).push?"toPush":"scoop";
+        }
         else this.newJob();
       }
     }
     }
-  } else {
+  } else if(this.mode!=="push"){
     this.tbA=-0.30; this.tsA=0; this.tkA=0.30; this.slewT=0;
     this.digging=0; this.tipping=0;
   }
@@ -1275,7 +1553,7 @@ function beget(){
    So that stopping the world and starting it again is not the same thing
    as ending it. What a machine is, where it stands, what it is trying to
    do and what it has taken out of itself getting there. */
-var MFIELDS=28;
+var MFIELDS=28, MODES=["scoop","dump","toPush","push"];
 function packMachines(){
   var n=machines.length, f=new Float32Array(n*MFIELDS), u;
   for(var i=0;i<n;i++){
@@ -1288,7 +1566,11 @@ function packMachines(){
     u=a.dgx; f[p+13]=(u===undefined)?a.tx:u;  u=a.dgz; f[p+14]=(u===undefined)?a.tz:u;
     f[p+15]=a.load; f[p+16]=a.dmg; f[p+17]=a.crowd; f[p+18]=a.ring;
     f[p+19]=a.stroke; f[p+20]=a.idle?1:0;
-    f[p+21]=(a.mode==="dump")?1:0; f[p+22]=(a.state==="work")?1:0;
+    /* one field, four values now that there is a second way to move sand:
+       digging, tipping, on its way to a push, and pushing. Still one
+       number, so nothing about the wire or the saved world changes. */
+    f[p+21]=(a.mode==="dump")?1:((a.mode==="toPush")?2:((a.mode==="push")?3:0));
+    f[p+22]=(a.state==="work")?1:0;
     f[p+23]=(a.mark===undefined)?-1e9:a.mark;
     f[p+24]=a.boom; f[p+25]=a.stick; f[p+26]=a.buck; f[p+27]=a.slew;
   }
@@ -1305,7 +1587,7 @@ function unpackMachines(f){
     a.tx=f[p+11]; a.tz=f[p+12]; a.dgx=f[p+13]; a.dgz=f[p+14];
     a.load=f[p+15]; a.dmg=f[p+16]; a.crowd=f[p+17]; a.ring=f[p+18];
     a.stroke=f[p+19]; a.idle=f[p+20]?1:0;
-    a.mode=f[p+21]?"dump":"scoop"; a.state=f[p+22]?"work":"go";
+    a.mode=MODES[f[p+21]|0]||"scoop"; a.state=f[p+22]?"work":"go";
     if(f[p+23]>-1e8) a.mark=f[p+23];
     a.boom=a.tbA=f[p+24]; a.stick=a.tsA=f[p+25];
     a.buck=a.tkA=f[p+26]; a.slew=a.slewT=f[p+27];
@@ -1327,7 +1609,12 @@ function snapshot(){
     var a=machines[i], p=i*12;
     ag[p]=a.x; ag[p+1]=a.z; ag[p+2]=a.ang;
     ag[p+3]=a.boom; ag[p+4]=a.stick; ag[p+5]=a.buck; ag[p+6]=a.slew;
-    ag[p+7]=a.load/a.cap; ag[p+8]=a.role; ag[p+9]=a.flash;
+    /* The sign says the load is being shoved rather than carried, so the
+       renderer can put it on the ground in front of the cutting edge
+       instead of inside the bucket. It costs no field and no byte, and the
+       drawing side already takes role and flash from the newer of the two
+       frames rather than blending them, so a change of sign lands cleanly. */
+    ag[p+7]=(a.mode==="push"?-1:1)*a.load/a.cap; ag[p+8]=a.role; ag[p+9]=a.flash;
     ag[p+10]=(a.role===RAISE)?a.sx:a.hx; ag[p+11]=(a.role===RAISE)?a.sz:a.hz;
   }
   var hh=grab(h.length); hh.set(h);
@@ -1415,6 +1702,7 @@ self.onmessage=function(e){
     if(pool.length>16) pool.length=16;
   }
 };
+
 </script>
 <script>
 /* ===================================================================
@@ -1806,7 +2094,10 @@ function drawMachines(alpha){
     var st=agA[p+4]+(agB[p+4]-agA[p+4])*alpha;
     var bk=agA[p+5]+(agB[p+5]-agA[p+5])*alpha;
     var sl=angLerp(agA[p+6],agB[p+6],alpha);
-    var lf=agA[p+7]+(agB[p+7]-agA[p+7])*alpha;
+    /* a negative load means it is being shoved along the ground rather than
+       carried in the bucket; the amount is the size of it either way */
+    var lf=Math.abs(agA[p+7])+(Math.abs(agB[p+7])-Math.abs(agA[p+7]))*alpha;
+    var shove=agB[p+7]<0;
     var role=agB[p+8], fl=agB[p+9];
 
     var y=hAt(x,z), g=gradAt(x,z);
@@ -1839,7 +2130,7 @@ function drawMachines(alpha){
     } else wOn[i]=1;
     wLX[i]=x; wLZ[i]=z; wLA[i]=ang;
     var mH=joint(_mA,mU,0,0,0,0,0);                 RIG.house.setMatrixAt(i,mH);
-    var mBo=joint(_mB,mH,-0.50,0.700,-0.140,bm,0);  RIG.boom.setMatrixAt(i,mBo);
+    var mBo=joint(_mB,mH,-0.50,0.700, 0.140,bm,0);  RIG.boom.setMatrixAt(i,mBo);
     /* the inner section slides along the outer one: a translation, not a hinge */
     var mS=joint(_mA,mBo,st,0,0,0,0);               RIG.stick.setMatrixAt(i,mS);
     var mK=joint(_mB,mS,1.30,0,0,bk,0);             RIG.bucket.setMatrixAt(i,mK);
@@ -1852,9 +2143,27 @@ function drawMachines(alpha){
        as it goes. A bucket tips at two thirds, so that is what counts as
        full here. */
     var k=lf*1.5; if(k>1) k=1;
+    if(shove){
+      /* Sand being shoved is not in the bucket. It is a wedge lying on the
+         ground in front of the cutting edge, wider than the bucket and
+         low, and it grows forward and sideways rather than upward - which
+         is the only thing that makes a machine dozing look different from
+         a machine driving about with a full bucket. */
+      /* Measured against where the bucket draws its own load rather than
+         worked out from the tooth position - twice now the arithmetic has
+         put this wedge under the sand where nobody could see it, and the
+         bucket's own placement is a fixed point that is known to be right.
+         So: the same heap, longer, much flatter, wider than the bucket,
+         and nudged forward past the cutting edge. */
+      var kw=k>0.02?k:0.0001;
+      _mC.makeScale(0.62+0.82*kw, 0.30+0.52*kw, 1.20+0.50*kw);
+      _mC.setPosition(0.17+0.07*kw, 0.046, 0);
+      RIG.load.setMatrixAt(i,_mA.multiply(_mC));
+    }else{
     var sv=k>0.02?(0.55+0.45*k):0.0001;
     _mC.makeScale(sv,k>0.02?k:0.0001,sv);
     RIG.load.setMatrixAt(i,_mA.multiply(_mC));
+    }
     var c=reveal?(role===0?COL_A:COL_B):COL_N;
     _c.setRGB(c[0]+fl*1.8,c[1]+fl*.9,c[2]+fl*.4);
     RIG.under.setColorAt(i,_c); RIG.house.setColorAt(i,_c); RIG.boom.setColorAt(i,_c);
@@ -2002,33 +2311,38 @@ var GEO_WHEEL=mergeParts(WHEEL,true);
 /* ---- body: engine on the boom side, cab on the other, boom pivot at the rear ----
    A Loadall carries its boom down the right-hand side and the operator sits
    beside it, which is why the cab is narrow and the machine looks lopsided
-   from the front. That lopsidedness is the whole silhouette. */
+   from the front. That lopsidedness is the whole silhouette.
+
+   It was built mirrored, and nobody could tell until there was a way to sit
+   in the cab and look out. Forward is +X and up is +Y, so the machine's
+   right is +Z; the boom goes there and the cab on -Z, which is the other way
+   round from how this was first written. */
 var GEO_HOUSE=mergeParts([
   boxPart(1.02,.10,.46, -.02,.325,   0,  DK[0],DK[1],DK[2]),                /* deck over the frame */
   /* engine bay, boom side (-Z) */
-  boxPart(.52,.26,.22,  -.12,.500, -.145, YEL[0],YEL[1],YEL[2],0,.93),
-  boxPart(.50,.02,.20,  -.12,.634, -.145, YLD[0],YLD[1],YLD[2]),            /* hood seam */
-  surf(boxPart(.05,.10,.05, .13,.700,-.145, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),  /* exhaust */
+  boxPart(.52,.26,.22,  -.12,.500,  .145, YEL[0],YEL[1],YEL[2],0,.93),
+  boxPart(.50,.02,.20,  -.12,.634,  .145, YLD[0],YLD[1],YLD[2]),            /* hood seam */
+  surf(boxPart(.05,.10,.05, .13,.700, .145, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),  /* exhaust */
   /* boom pivot tower, right at the back */
-  boxPart(.20,.34,.24,  -.52,.560, -.140, DK[0],DK[1],DK[2],0,.90),
-  surf(boxPart(.08,.08,.26, -.50,.700,-.140, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),  /* pivot boss */
+  boxPart(.20,.34,.24,  -.52,.560,  .140, DK[0],DK[1],DK[2],0,.90),
+  surf(boxPart(.08,.08,.26, -.50,.700, .140, STL[0],STL[1],STL[2]),STEELY[0],STEELY[1]),  /* pivot boss */
   /* cab, the other side (+Z) */
-  boxPart(.44,.045,.26,  .06,.400,  .155, YEL[0],YEL[1],YEL[2]),            /* cab floor */
-  boxPart(.46,.035,.28,  .06,.760,  .155, DK[0],DK[1],DK[2],0,.95),         /* roof */
-  boxPart(.026,.34,.26,  .275,.585, .155, YEL[0],YEL[1],YEL[2]),            /* front post */
-  boxPart(.026,.34,.26, -.155,.585, .155, YEL[0],YEL[1],YEL[2]),            /* rear post */
+  boxPart(.44,.045,.26,  .06,.400, -.155, YEL[0],YEL[1],YEL[2]),            /* cab floor */
+  boxPart(.46,.035,.28,  .06,.760, -.155, DK[0],DK[1],DK[2],0,.95),         /* roof */
+  boxPart(.026,.34,.26,  .275,.585,-.155, YEL[0],YEL[1],YEL[2]),            /* front post */
+  boxPart(.026,.34,.26, -.155,.585,-.155, YEL[0],YEL[1],YEL[2]),            /* rear post */
   /* the cab is a glasshouse: corner posts, a sill and glass. A solid outer
      panel hid the windows entirely and made it read as a yellow crate. */
-  boxPart(.026,.34,.026, .275,.585, .285, YEL[0],YEL[1],YEL[2]),            /* outer front post */
-  boxPart(.026,.34,.026,-.155,.585, .285, YEL[0],YEL[1],YEL[2]),            /* outer rear post */
-  boxPart(.44,.045,.026,  .06,.428, .285, YEL[0],YEL[1],YEL[2]),            /* sill */
-  surf(boxPart(.40,.315,.012, .06,.602, .285, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
-  surf(boxPart(.012,.315,.24, .268,.602,.155, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
-  surf(boxPart(.012,.315,.24,-.148,.602,.155, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
-  boxPart(.39,.30,.235,  .06,.590, .150, BLK[0],BLK[1],BLK[2]),             /* the dark inside */
-  boxPart(.11,.13,.13,   .02,.500, .150, DK[0],DK[1],DK[2]),                /* seat */
-  boxPart(.10,.018,.13,  .215,.290, .240, DK[0],DK[1],DK[2]),               /* step */
-  surf(boxPart(.03,.04,.03,-.16,.800, .155, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])    /* beacon */
+  boxPart(.026,.34,.026, .275,.585,-.285, YEL[0],YEL[1],YEL[2]),            /* outer front post */
+  boxPart(.026,.34,.026,-.155,.585,-.285, YEL[0],YEL[1],YEL[2]),            /* outer rear post */
+  boxPart(.44,.045,.026,  .06,.428,-.285, YEL[0],YEL[1],YEL[2]),            /* sill */
+  surf(boxPart(.40,.315,.012, .06,.602,-.285, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
+  surf(boxPart(.012,.315,.24, .268,.602,-.155, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
+  surf(boxPart(.012,.315,.24,-.148,.602,-.155, GLS[0],GLS[1],GLS[2]),GLASSY[0],GLASSY[1]),
+  boxPart(.39,.30,.235,  .06,.590,-.150, BLK[0],BLK[1],BLK[2]),             /* the dark inside */
+  boxPart(.11,.13,.13,   .02,.500,-.150, DK[0],DK[1],DK[2]),                /* seat */
+  boxPart(.10,.018,.13,  .215,.290,-.240, DK[0],DK[1],DK[2]),               /* step */
+  surf(boxPart(.03,.04,.03,-.16,.800,-.155, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])    /* beacon */
 ],true);
 
 /* ---- the boom: one straight member that telescopes, not a jointed arm ----
@@ -2158,8 +2472,8 @@ var _c=new THREE.Color();
    ========================================================= */
 var lampMat=new THREE.MeshBasicMaterial({color:0xfff0cc,transparent:true,opacity:0});
 var GEO_LAMPS=mergeParts([
-  boxPart(.06,.06,.06,  .34,.33, .225, 1,1,1),
-  boxPart(.06,.06,.06,  .34,.33, .065, 1,1,1)
+  boxPart(.06,.06,.06,  .34,.33,-.225, 1,1,1),
+  boxPart(.06,.06,.06,  .34,.33,-.065, 1,1,1)
 ]);
 var LAMPS=new THREE.InstancedMesh(GEO_LAMPS,lampMat,MAXI);
 LAMPS.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -2293,7 +2607,7 @@ function stepDust(dt){
    happens about once every seven minutes and is the reason
    to keep watching.
    ========================================================= */
-var SHOT={ WIDE:0, TRIPOD:1, FOLLOW:2, WORK:3, SUMMIT:4, CONFLICT:5, GRAND:6, AFTERMATH:7 };
+var SHOT={ WIDE:0, TRIPOD:1, FOLLOW:2, WORK:3, SUMMIT:4, CONFLICT:5, GRAND:6, AFTERMATH:7, CAB:8 };
 var shot=null, shotEnd=0, lastType=-1, sinceDip=0, dipUntil=0, forceType=-1;
 var camP0=new THREE.Vector3(), camP1=new THREE.Vector3(),
     camT0=new THREE.Vector3(), camT1=new THREE.Vector3();
@@ -2322,7 +2636,7 @@ function scanPeak(){
 function machineAt(i){
   if(!agB||i>=nB) return null;
   var p=i*12;
-  return {x:agB[p],z:agB[p+1],ang:agB[p+2],load:agB[p+7],role:agB[p+8],tx:agB[p+10],tz:agB[p+11]};
+  return {x:agB[p],z:agB[p+1],ang:agB[p+2],load:Math.abs(agB[p+7]),role:agB[p+8],tx:agB[p+10],tz:agB[p+11]};
 }
 function pickBusyMachine(){
   if(!nB) return null;
@@ -2361,7 +2675,7 @@ function chooseShot(){
   else if(ev) type=SHOT.AFTERMATH;
   else if(forceType<0){
     var bag=[SHOT.WIDE,SHOT.TRIPOD,SHOT.FOLLOW,SHOT.WORK,SHOT.WORK,
-             SHOT.SUMMIT,SHOT.CONFLICT,SHOT.CONFLICT,SHOT.GRAND];
+             SHOT.SUMMIT,SHOT.CONFLICT,SHOT.CONFLICT,SHOT.GRAND,SHOT.CAB];
     do{ type=bag[(Math.random()*bag.length)|0]; } while(type===lastType && Math.random()<0.8);
   }
   if(forceType<0) lastType=type; else lastType=-1;
@@ -2414,13 +2728,13 @@ function chooseShot(){
       dur=randIn(11,18);
     }
   }
-  else if(type===SHOT.FOLLOW||type===SHOT.WORK){
+  else if(type===SHOT.FOLLOW||type===SHOT.WORK||type===SHOT.CAB){
     var mi2=(pinIx>=0&&pinIx<nB)?pinIx:pickBusyMachine();
     shot={type:type,follow:mi2,end:0};
-    dur=type===SHOT.WORK?randIn(9,15):randIn(11,18);
+    dur=type===SHOT.WORK?randIn(9,15):(type===SHOT.CAB?randIn(12,20):randIn(11,18));
   }
 
-  shot=shot&&shot.follow!==undefined&&(type===SHOT.FOLLOW||type===SHOT.WORK)
+  shot=shot&&shot.follow!==undefined&&(type===SHOT.FOLLOW||type===SHOT.WORK||type===SHOT.CAB)
       ? {type:type,follow:shot.follow}
       : {type:type};
   shot.t0=now; shot.dur=dur*1000;
@@ -2467,7 +2781,34 @@ function driveCamera(now,dt){
   var u=Math.min(1,(now-shot.t0)/shot.dur);
   var e=u*u*(3-2*u);                                  /* ease, so nothing starts or stops hard */
 
-  if(shot.type===SHOT.FOLLOW||shot.type===SHOT.WORK){
+  if(shot.type===SHOT.CAB){
+    /* From where the driver sits. A Loadall carries its boom down one side
+       and the operator beside it, so this is not the middle of the machine
+       and the boom lies across the right of the frame the whole time - which
+       is the point of sitting here rather than behind. The eye is just
+       outside the windscreen, because the seat itself is inside a box whose
+       inside faces are not drawn and there would be nothing to see.
+
+       Nobody is driving. That is the whole of the piece. But the machine
+       has a seat, and this is what would be in front of anyone in it. */
+    var mc=machineAt(shot.follow);
+    if(!mc){ chooseShot(); return; }
+    var ca=Math.cos(mc.ang), sa=Math.sin(mc.ang);
+    var ex=mc.x+machLen*(0.31*ca+0.155*sa);
+    var ez=mc.z+machLen*(0.31*sa-0.155*ca);
+    /* eye height off the ground the machine is standing on, but never
+       inside the ground the eye is over - a machine nosed into a face
+       would otherwise put the camera inside the sand and the frame goes
+       black, which it did */
+    var ey=terrainAt(mc.x,mc.z)+0.62*machLen;
+    var eg=terrainAt(ex,ez)+0.22*machLen; if(ey<eg) ey=eg;
+    camera.position.lerp(_v.set(ex,ey,ez),Math.min(1,dt*6.0));
+    /* looking along the boom at the ground it is about to work */
+    var fx=mc.x+Math.cos(mc.ang)*2.6*machLen, fz=mc.z+Math.sin(mc.ang)*2.6*machLen;
+    camT0.set(fx,terrainAt(fx,fz)+0.10*machLen,fz);
+    camera.lookAt(camT0);
+  }
+  else if(shot.type===SHOT.FOLLOW||shot.type===SHOT.WORK){
     var m=machineAt(shot.follow);
     if(!m){ chooseShot(); return; }
     var back=shot.type===SHOT.WORK?3.2:6.0, side=shot.type===SHOT.WORK?2.4:1.6;
@@ -2684,7 +3025,11 @@ function netApply(d){
     ag[p+4]=d.getInt16(o,true)*P; o+=2;
     ag[p+5]=d.getInt16(o,true)*P; o+=2;
     ag[p+6]=d.getInt16(o,true)*P; o+=2;
-    ag[p+7]=d.getUint8(o)/255; o+=1;
+    /* top bit set means shoving; the rest is how full the bucket is. The
+       sign is how the drawing side is told, the same as it is told by the
+       worker when there is no server to talk to. */
+    var lb=d.getUint8(o); o+=1;
+    ag[p+7]=((lb&128)?-1:1)*(lb&127)/127;
     ag[p+8]=d.getUint8(o); o+=1;
     ag[p+9]=d.getUint8(o)/255; o+=1;
     ag[p+10]=ag[p]; ag[p+11]=ag[p+1];
@@ -2776,7 +3121,7 @@ var SAVEKEY ="repose.world."+WORLDTAG, VISITKEY="repose.visits."+WORLDTAG;
    =================================================================== */
 var DEV=Q.has("dev"), NOSAVE=Q.has("nosave");
 var CLOCKSHIFT=(parseFloat(Q.get("days"))||0)*86400000;
-var SHOTNAMES={wide:0,tripod:1,follow:2,work:3,summit:4,conflict:5,grand:6,aftermath:7};
+var SHOTNAMES={wide:0,tripod:1,follow:2,work:3,summit:4,conflict:5,grand:6,aftermath:7,cab:8};
 
 /* ===================================================================
    REPOSE
@@ -3186,7 +3531,7 @@ function removeMachines(n,role){
     .catch(function(){});
 }
 var fps=0, fpsT=performance.now(), fpsN=0;
-var SHOTLABEL=["wide","tripod","follow","work","summit","conflict","grand","aftermath"];
+var SHOTLABEL=["wide","tripod","follow","work","summit","conflict","grand","aftermath","cab"];
 function updateDev(now){
   fpsN++;
   if(now-fpsT>500){ fps=fpsN*1000/(now-fpsT); fpsN=0; fpsT=now; }
