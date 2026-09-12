@@ -3564,15 +3564,25 @@ function netPoll(){
       netApply(new DataView(buf));
       netFail=0; netEver=true; netAsking=false;
       netNextAt=netSentAt+(tickEst||TICK_GUESS);
+      /* and ask again as soon as that floor has passed, rather than waiting
+         for the next turn of the clock below. The clock runs every 50 ms, so
+         leaving it to do the asking threw away up to 50 ms of every cycle —
+         a sixth of the round trip, for nothing. The clock stays as the thing
+         that notices when this has not happened. */
+      var due=netNextAt-performance.now();
+      setTimeout(netPoll,due>0?due:0);
     })
     .catch(function(){
       netAsking=false; netFail++;
-      netNextAt=performance.now()+netFail*(tickEst||TICK_GUESS);
+      var back=netFail*(tickEst||TICK_GUESS);
+      netNextAt=performance.now()+back;
       if(!netEver&&netFail>=6){
         netOn=false;
         console.warn("the world has never answered; computing one here instead");
         startLocal();
+        return;
       }
+      setTimeout(netPoll,back);
     });
 }
 /* The clock that keeps it going. It also drops a reply that has taken twice as
@@ -3700,7 +3710,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1789231594039  /* 2026-09-12 16:46 UTC */;                 /* stamped in when this file was made */
+var BUILT=1789239178594  /* 2026-09-12 18:52 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
