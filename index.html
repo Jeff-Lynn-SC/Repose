@@ -113,7 +113,7 @@ function walk(d,period,seed){
   var x=d/period+seed*17.3, i=Math.floor(x), f=x-i, u=f*f*(3-2*f);
   return h1(i+seed*7.1)*(1-u)+h1(i+1+seed*7.1)*u;
 }
-var windDir=0, windStr=0, eraTick=0;
+var windDir=0, windStr=0, windGust=1, eraTick=0;
 var clockShift=0;
 function updateEra(){
   var d=worldDays();
@@ -122,6 +122,13 @@ function updateEra(){
   rateMul  = 0.55+1.05*walk(d,0.9,3);
   windDir  = walk(d,2.3,4)*6.2832;
   windStr  = Math.pow(walk(d,0.6,5),1.7);
+  /* Deep time gives the prevailing wind - what the season is doing. Real wind
+     is not one number for a week: it gusts and drops over minutes, and it
+     swings a few degrees with each gust. Two faster walks on the same clock,
+     so nothing is stored and two people opening this at the same moment are
+     in the same weather. */
+  windGust = 0.45+1.35*walk(d,0.0042,11);        /* about six minutes */
+  windDir += (walk(d,0.0090,12)-0.5)*0.55;       /* and it wanders as it goes */
 }
 
 /* ---- the pit remembers where it has been stripped ----
@@ -139,24 +146,81 @@ function updateRock(){
 }
 
 /* ---- wind ---- */
+/* WIND.
+
+   What this was: one strength for the whole pit, moving sand only off cells
+   that already stood above their neighbours, and scrubbing wear only on those
+   same cells. So a track on flat ground was never touched by wind at all, and
+   the wind had no geography - the lee of a hill blew as hard as its crest.
+
+   What it is now, which is how sand actually moves:
+
+   * There is a threshold. Below a certain wind nothing lifts at all; above
+     it the amount carried climbs steeply - Bagnold's cube of the excess. So
+     a quiet week leaves the ground alone entirely and a gale rearranges it,
+     rather than everything creeping all the time.
+
+   * Packed sand resists. Ground that has been driven over needs a harder
+     wind to lift it, so a track that has been used survives weather that
+     wipes the loose sand beside it away. That is why old desert tracks last
+     for decades and sometimes end up standing proud of the ground around
+     them: history, written by the wind refusing to take it.
+
+   * The wind has a shape, and the shape is the ground. It runs quicker up a
+     windward face and over a crest, and it slackens in the lee and in
+     hollows - which is exactly where the sand it is carrying gets dropped.
+     No wind map: the local wind is the prevailing wind and the slope it is
+     crossing, so this costs nothing to store and nothing on the wire, and
+     dunes walk downwind because of it rather than because anyone said so.
+
+   `WIND_T` is the threshold and `WIND_PACK` how much harder packed sand is to
+   lift. Both are material, like the angle of repose. `windGust` is weather. */
+var WIND_T=0.12, WIND_PACK=2.2, WIND_REF=0.681;   /* (1-WIND_T)^3: a full gale on bare sand is 1 */
 function windStep(dt){
-  if(windStr<0.06) return;
+  var str=windStr*windGust;
+  if(str<WIND_T*0.5) return;                 /* nothing is moving anywhere */
   var wx=Math.cos(windDir), wz=Math.sin(windDir);
   var ax=Math.abs(wx), az=Math.abs(wz), sx=ax/(ax+az+1e-6), sz=1-sx;
   var jxo=wx>0?1:-1, jzo=wz>0?N:-N;
   /* Wind works over hours, not seconds. At the old rate it took a fraction of
      any raised ground away forty times a second, so a fresh heap was flat
      before the machine that made it had turned round. */
-  var k=0.010*windStr*dt;
+  var k=0.010*dt, cs=1/CS;
   for(var z=1;z<N-1;z++){
     for(var x=1;x<N-1;x++){
       var i=z*N+x;
-      var loc=(h[i-1]+h[i+1]+h[i-N]+h[i+N])*0.25;
-      var ex=h[i]-loc;
-      if(ex<=0.02*CS) continue;
-      var t=ex*k; if(t>ex*0.2) t=ex*0.2;
-      h[i]-=t; h[i+jxo]+=t*sx; h[i+jzo]+=t*sz;
-      if(wear[i]>0) wear[i]*=(1-0.55*windStr*dt);
+      /* how exposed this place is: the ground it stands above, upwind */
+      var upw=h[i-jxo]*sx+h[i-jzo]*sz;
+      var expo=(h[i]-upw)*cs;                /* a slope: + into the wind, - in the lee */
+      var loc=str*(1+2.2*expo);
+      if(loc>str*2.5) loc=str*2.5; else if(loc<0) loc=0;
+      var thr=WIND_T*(1+WIND_PACK*(wear[i]||0));
+      if(loc<=thr) continue;                 /* it cannot lift this sand */
+      var q=loc-thr, flux=q*q*q/WIND_REF;    /* Bagnold: the cube of the excess */
+      /* it takes a share of what stands proud of its own neighbours, so the
+         wind moves a surface rather than digging a hole in flat ground. The
+         share is what the old wind used, so a gale still does what it always
+         did; everything below the threshold now does nothing at all. */
+      var nb=(h[i-1]+h[i+1]+h[i-N]+h[i+N])*0.25, ex=h[i]-nb;
+      if(ex>0){
+        var rate=k*flux; if(rate>0.2) rate=0.2;
+        var t=ex*rate;
+        h[i]-=t; h[i+jxo]+=t*sx; h[i+jzo]+=t*sz;
+        /* what lands is loose, and loose sand on top of packed ground is what
+           the surface now is - so a lee that is filling in stops being a road */
+        var soft=t/(0.004*CS);
+        if(soft>0){
+          var ja=i+jxo, jb=i+jzo;
+          if(wear[ja]>0) wear[ja]*=(1-(soft*sx>1?1:soft*sx));
+          if(wear[jb]>0) wear[jb]*=(1-(soft*sz>1?1:soft*sz));
+        }
+      }
+      /* and the same wind that lifted the sand scours what packed it - slowly,
+         and only when it is above the threshold for packed ground at all */
+      if(wear[i]>0){
+        var sc=q*q*0.02*dt; if(sc>0.2) sc=0.2;
+        wear[i]*=(1-sc);
+      }
     }
   }
 }
@@ -1730,9 +1794,19 @@ function substep(dt){
   }
   avDN=0;
   if((conflictTick++%40)===0) findConflicts();
-  /* wear fades here rather than in the renderer: it is state, not shading */
-  var decay=1-0.035*dt;
-  for(var w=0;w<wear.length;w++) if(wear[w]>0.002) wear[w]*=decay;
+  /* COMPRESSION LASTS UNTIL SOMETHING UNDOES IT.
+
+     This used to fade every cell in the world by 3.5% a second, on a timer,
+     which is a half-life of twenty seconds: no ground could stay packed long
+     enough to be anything, and a track was gone before the machine that made
+     it had finished the job. It was the reason `tracked` never rose above a
+     few per cent however many machines were driving.
+
+     Packing is a state of the sand, so only the sand undoes it. Three things
+     do, and all three were already here: the wind scours it off exposed
+     ground once it is blowing hard enough to lift packed sand at all; a
+     bucket tipped onto it is loose sand and resets it; and digging takes it
+     away with the sand it was. Nothing else should. */
 }
 
 /* --------------------- how a machine comes to be --------------------- */
@@ -1861,7 +1935,8 @@ function snapshot(){
   var rk=grab(rock.length); rk.set(rock);
   var msg={type:"snap", tick:tick++, n:n, dustN:dustN, evN:evN,
     h:hh, wear:ww, agents:ag, dust:du, events:ev, rock:rk,
-    era:{day:worldDays(),mix:mixRaise,repose:reposeDeg,rate:rateMul,windDir:windDir,windStr:windStr},
+    era:{day:worldDays(),mix:mixRaise,repose:reposeDeg,rate:rateMul,windDir:windDir,
+         windStr:windStr,windGust:windGust},
     N:N, CS:CS, HALF:HALF, BASE:BASE, machLen:machLen, fieldMode:fieldMode,
     stats:{mean:meanH,max:maxH,min:minH,gini:gini,stripped:stripped,buried:buried,
            tracked:tracked,collapses:collapses,nA:nA,nB:nB,mass:totalMass,
@@ -2154,6 +2229,103 @@ function hAt(wx,wz){
 
 /* ---- terrain ---- */
 var pos=null,nor=null,col=null,geo=null,terrain=null,pit=[];
+
+/* ---------------------------------------------------------
+   TRACKS.
+
+   Wear is already on the wire and already tints the ground, but it is tinted
+   into the terrain's own vertices - and a cell is five and a half metres, so
+   a two-metre track was smeared across eleven and read as a cloud shadow.
+   Seventy-five machines could cross the pit all day and leave a surface that
+   looked untouched.
+
+   So the tracks get a surface of their own, about a metre to the texel, which
+   the sand shader samples. A machine lays down two bands where its wheels
+   are, the wind rubs them out, and what is left is the pattern the work makes
+   - which at a kilometre is the only thing on the ground big enough to read.
+
+   It is drawn here rather than sent over the wire: it is a picture, not state,
+   and the wire is for what the world is. The coarse wear tint stays as the
+   shared base underneath, so two people looking at the same pit see the same
+   worked ground; the fine lines are each viewer's own, from when they arrived.
+   --------------------------------------------------------- */
+var TRK_N=1024, trkData=null, trkTex=null, trkPx=1, trkUp=0, trkSlice=0,
+    trkLX=null, trkLZ=null, trkOn=null, wearTex=null, wearPix=null;
+function trackReset(){
+  trkData=new Uint8Array(TRK_N*TRK_N);
+  trkTex=new THREE.DataTexture(trkData,TRK_N,TRK_N,THREE.RedFormat,THREE.UnsignedByteType);
+  trkTex.minFilter=THREE.LinearFilter; trkTex.magFilter=THREE.LinearFilter;
+  trkTex.wrapS=THREE.ClampToEdgeWrapping; trkTex.wrapT=THREE.ClampToEdgeWrapping;
+  trkTex.needsUpdate=true;
+  trkPx=(HALF*2)/TRK_N;                 /* metres per texel */
+  /* The shared wear field, as a picture the shader can read. Whether there is
+     a track here at all is the world's business, and the world already knows:
+     wear is on the wire, saved with everything else, packed by driving and
+     scoured by the wind. The fine lines below are only how it is drawn. So
+     two people see tracks in the same places for the same reasons, and a
+     track lasts exactly as long as the ground stays packed. */
+  wearPix=new Uint8Array(N*N);
+  wearTex=new THREE.DataTexture(wearPix,N,N,THREE.RedFormat,THREE.UnsignedByteType);
+  wearTex.minFilter=THREE.LinearFilter; wearTex.magFilter=THREE.LinearFilter;
+  wearTex.wrapS=THREE.ClampToEdgeWrapping; wearTex.wrapT=THREE.ClampToEdgeWrapping;
+  wearTex.needsUpdate=true;
+  trkLX=new Float32Array(MAXI); trkLZ=new Float32Array(MAXI); trkOn=new Uint8Array(MAXI);
+}
+/* one soft dab of a wheel, in metres */
+function trackDab(wx,wz,rad,amt){
+  var u=(wx+HALF)/trkPx, v=(wz+HALF)/trkPx, r=rad/trkPx;
+  var u0=Math.floor(u-r), u1=Math.ceil(u+r), v0=Math.floor(v-r), v1=Math.ceil(v+r);
+  if(u1<0||v1<0||u0>=TRK_N||v0>=TRK_N) return;
+  if(u0<0)u0=0; if(v0<0)v0=0; if(u1>TRK_N-1)u1=TRK_N-1; if(v1>TRK_N-1)v1=TRK_N-1;
+  var rr=r*r;
+  for(var vy=v0;vy<=v1;vy++){
+    var dy=vy+0.5-v, row=vy*TRK_N;
+    for(var ux=u0;ux<=u1;ux++){
+      var dx=ux+0.5-u, d2=dx*dx+dy*dy;
+      if(d2>rr) continue;
+      var f=1-d2/rr;                    /* soft at the edge of the tyre */
+      var q=trkData[row+ux]+amt*f;
+      trkData[row+ux]=q>255?255:q;
+    }
+  }
+}
+/* the two bands a machine leaves between where it was and where it is */
+function trackLay(i,x,z,ang){
+  if(!trkData) return;
+  if(!trkOn[i]){ trkOn[i]=1; trkLX[i]=x; trkLZ[i]=z; return; }
+  var dx=x-trkLX[i], dz=z-trkLZ[i], d=Math.sqrt(dx*dx+dz*dz);
+  if(d<0.02*machLen){ return; }
+  if(d>0.6*machLen){ trkLX[i]=x; trkLZ[i]=z; return; }   /* it was moved, not driven */
+  var half=0.245*machLen, rad=0.78*0.093*machLen+trkPx*0.60;
+  var sx=-Math.sin(ang)*half, sz=Math.cos(ang)*half;
+  var steps=Math.ceil(d/(trkPx*0.7)); if(steps>24) steps=24;
+  for(var k=1;k<=steps;k++){
+    var t=k/steps, px=trkLX[i]+dx*t, pz=trkLZ[i]+dz*t;
+    trackDab(px+sx,pz+sz,rad,78);
+    trackDab(px-sx,pz-sz,rad,78);
+  }
+  trkLX[i]=x; trkLZ[i]=z;
+}
+/* the wind rubs them out, a slice at a time so no frame carries the cost of
+   a whole square kilometre */
+function wearToTexture(){
+  if(!wearPix||!wearB) return;
+  var n=Math.min(wearPix.length,wearB.length);
+  for(var i=0;i<n;i++){ var v=wearB[i]*255; wearPix[i]=v>255?255:v; }
+  wearTex.needsUpdate=true;
+}
+function trackFade(dt){
+  if(!trkData) return;
+  if(wearB&&wearPix&&(trkSlice&7)===0) wearToTexture();
+  var wind=(era&&era.windStr!==undefined)?era.windStr:0.3;
+  var per=16, len=(TRK_N*TRK_N/per)|0;
+  var k=Math.exp(-(0.010+0.055*wind)*dt*per);
+  var a=trkSlice*len, b=a+len;
+  for(var i=a;i<b;i++){ var v=trkData[i]; if(v) trkData[i]=v*k; }
+  trkSlice=(trkSlice+1)%per;
+  var now=performance.now();
+  if(now-trkUp>150){ trkUp=now; trkTex.needsUpdate=true; }
+}
 function LIN(a){ return [Math.pow(a[0],2.2),Math.pow(a[1],2.2),Math.pow(a[2],2.2)]; }
 var C_STONE=LIN([.36,.34,.32]), C_ROCK=LIN([.30,.28,.25]), C_DAMP=LIN([.40,.26,.14]),
     C_MID=LIN([.76,.58,.33]),  C_LIT=LIN([.99,.90,.70]), C_WEAR=LIN([.31,.24,.16]);
@@ -2176,6 +2348,7 @@ function buildTerrain(){
   geo.setAttribute("normal",new THREE.BufferAttribute(nor,3));
   geo.setAttribute("color",new THREE.BufferAttribute(col,3));
   geo.setIndex(new THREE.BufferAttribute(ind,1));
+  trackReset();
   var sandMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.94,metalness:0});
   sandMat.envMapIntensity=0.85;
   /* ---------------------------------------------------------
@@ -2188,6 +2361,9 @@ function buildTerrain(){
      --------------------------------------------------------- */
   sandMat.onBeforeCompile=function(sh){
     sh.uniforms.uRip={value:1.0};
+    sh.uniforms.uTrk={value:trkTex};
+    sh.uniforms.uWear={value:wearTex};
+    sh.uniforms.uTrkHalf={value:HALF};
     sh.vertexShader="varying vec3 vWPos;\nvarying vec3 vWNrm;\n"+sh.vertexShader.replace(
       "#include <begin_vertex>",
       "#include <begin_vertex>\n"+
@@ -2195,6 +2371,12 @@ function buildTerrain(){
       "  vWNrm=normalize(mat3(modelMatrix)*normal);");
     sh.fragmentShader=
       "varying vec3 vWPos;\nvarying vec3 vWNrm;\nuniform float uRip;\n"+
+      "uniform sampler2D uTrk;\nuniform sampler2D uWear;\nuniform float uTrkHalf;\n"+
+      "float trackAt(vec2 w){\n"+
+      "  vec2 uv=(w+uTrkHalf)/(2.0*uTrkHalf);\n"+
+      "  float packed=texture2D(uWear,uv).r;\n"+
+      "  return texture2D(uTrk,uv).r*clamp(packed*2.2,0.0,1.0);\n"+
+      "}\n"+
       "float ripple(vec2 p){\n"+
       "  return sin(p.x*0.85+sin(p.y*0.19)*2.4)\n"+
       "       + 0.55*sin(p.x*2.10+sin(p.y*0.47)*1.7)\n"+
@@ -2207,7 +2389,7 @@ function buildTerrain(){
       "    float dcam=length(vWPos-cameraPosition);\n"+
       "    float near=1.0-smoothstep(24.0,190.0,dcam);\n"+
       "    float lie=smoothstep(0.55,0.92,vWNrm.y);\n"+
-      "    float amt=near*lie*uRip;\n"+
+      "    float amt=near*lie*uRip*(1.0-0.90*trackAt(vWPos.xz));\n"+
       "    if(amt>0.004){\n"+
       "      vec2 q=vWPos.xz;\n"+
       "      float e=0.5;\n"+
@@ -2216,6 +2398,18 @@ function buildTerrain(){
       "      float rz=ripple(q+vec2(0.0,e));\n"+
       "      vec3 wn=normalize(vWNrm-vec3(rx-r0,0.0,rz-r0)*0.42*amt);\n"+
       "      normal=normalize((viewMatrix*vec4(wn,0.0)).xyz);\n"+
+      "    }\n"+
+      "  }");
+    /* packed sand is darker and greyer than loose sand, and it holds no
+       ripples at all - which is the whole of what a track looks like */
+    sh.fragmentShader=sh.fragmentShader.replace(
+      "#include <color_fragment>",
+      "#include <color_fragment>\n"+
+      "  {\n"+
+      "    float tk=trackAt(vWPos.xz);\n"+
+      "    if(tk>0.002){\n"+
+      "      float lum=dot(diffuseColor.rgb,vec3(0.299,0.587,0.114));\n"+
+      "      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(lum),0.30*tk)*(1.0-0.52*tk);\n"+
       "    }\n"+
       "  }");
     sandMat.userData.shader=sh;
@@ -2320,6 +2514,8 @@ function joint(out,parent,x,y,z,rz,ry){
   return out;
 }
 function drawMachines(alpha){
+  trackFade(Math.min(0.1,(performance.now()-(drawMachines._t||performance.now()))/1000));
+  drawMachines._t=performance.now();
   if(!agA||!agB) return;
   var n=Math.min(nA,nB), i;
   for(i=0;i<n;i++){
@@ -2337,6 +2533,7 @@ function drawMachines(alpha){
     var shove=agB[p+7]<0;
     var role=agB[p+8], fl=agB[p+9];
 
+    trackLay(i,x,z,ang);
     var y=hAt(x,z), g=gradAt(x,z);
     _up.set(-g.x,1,-g.z).normalize();
     _fw.set(Math.cos(ang),0,Math.sin(ang));
@@ -3339,7 +3536,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1789160690126  /* 2026-09-11 21:04 UTC */;                 /* stamped in when this file was made */
+var BUILT=1789202075522  /* 2026-09-12 08:34 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
