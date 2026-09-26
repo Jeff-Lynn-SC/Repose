@@ -2783,6 +2783,10 @@ function sendInstances(attr,count,item){
 /* Shown only on request: a raiser burns orange, a filler goes cold blue.
    Strong enough to pick one out of a crowd at any distance. */
 var COL_A=[2.60,.62,.14], COL_B=[.16,1.05,2.60], COL_N=[1,1,1];
+/* _mHouse is NOT scratch. The arm is solved with _mA and _mB handed back and
+   forth, so anything that has to survive to the end of the loop - and the
+   lamps do - needs a matrix nobody else writes to. */
+var _mHouse=new THREE.Matrix4();
 var _m4=new THREE.Matrix4(), _mA=new THREE.Matrix4(), _mB=new THREE.Matrix4(), _mC=new THREE.Matrix4(),
     _up=new THREE.Vector3(), _fw=new THREE.Vector3(), _rt=new THREE.Vector3(),
     _sc=new THREE.Vector3(), _q=new THREE.Quaternion(), _pv=new THREE.Vector3();
@@ -2872,6 +2876,7 @@ function drawMachines(alpha){
     } else wOn[i]=1;
     wLX[i]=x; wLZ[i]=z; wLA[i]=ang;
     var mH=joint(_mA,mU,0,0,0,0,0);                 RIG.house.setMatrixAt(i,mH);
+    _mHouse.copy(mH);   /* because mH is about to become the stick, then the bucket */
     var mBo=joint(_mB,mH,-0.408,0.308,0.092,bm,0);  RIG.boom.setMatrixAt(i,mBo);
     /* the inner section slides along the outer one: a translation, not a hinge */
     var mS=joint(_mA,mBo,st,0,0,0,0);               RIG.stick.setMatrixAt(i,mS);
@@ -2932,13 +2937,13 @@ function drawMachines(alpha){
       RIG.wheel.setMatrixAt(i*4+w,mW); RIG.wheel.setColorAt(i*4+w,_c);
     }
     if(typeof LAMPS!=="undefined" && nightFactor>0.02){
-      LAMPS.setMatrixAt(i,mH);
+      LAMPS.setMatrixAt(i,_mHouse);
       /* on the cab roof, between the two boxes that are drawn there, and
          pointed where the machine is pointed with the downward tilt a work
          light is hung at. Both go through the machine's own matrix, so the
          beam tilts with the body rather than staying level with the world. */
-      _lampPos.set(LAMP_X,LAMP_Y,(LAMP_Z1+LAMP_Z2)*0.5).applyMatrix4(mH);
-      _lampAim.set(1.0,-0.34,0.0).transformDirection(mH).normalize();
+      _lampPos.set(LAMP_X,LAMP_Y,(LAMP_Z1+LAMP_Z2)*0.5).applyMatrix4(_mHouse);
+      _lampAim.set(1.0,-0.34,0.0).transformDirection(_mHouse).normalize();
       lampOffer(_lampPos.distanceToSquared(camera.position));
     }
   }
@@ -4158,7 +4163,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1790439064098  /* 2026-09-26 16:11 UTC */;                 /* stamped in when this file was made */
+var BUILT=1790447359870  /* 2026-09-26 18:29 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
