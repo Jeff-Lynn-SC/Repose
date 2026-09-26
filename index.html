@@ -3099,6 +3099,17 @@ var GEO_WHEEL=mergeParts(WHEEL,true);
    in the cab and look out. Forward is +X and up is +Y, so the machine's
    right is +Z; the boom goes there and the cab on -Z, which is the other way
    round from how this was first written. */
+/* ---- where a work lamp is ----
+   On the leading edge of the cab roof, one at each side, which is where a
+   Loadall carries them. The roof's front edge is x=.180 and its top is
+   y=.449, so these sit just inboard and just proud of it.
+
+   Three things are built from these four numbers: the housing just below
+   (part of the machine, lit by the sun, there at midday), the lens in
+   GEO_LAMPS that lights up at night, and the beam itself in drawMachines.
+   Move a lamp and all three move. */
+var LAMP_X=.168, LAMP_Y=.463, LAMP_Z1=-.175, LAMP_Z2=-.032;
+
 var GEO_HOUSE=mergeParts([
   boxPart(.767,.017,.383, -.050,.147,   0,  DK[0],DK[1],DK[2]),             /* deck over the frame */
   /* engine bay, boom side (+Z). Low and long, and it does not reach the roof:
@@ -3123,7 +3134,15 @@ var GEO_HOUSE=mergeParts([
   boxPart(.300,.230,.165,  .017,.300, -.100, BLK[0],BLK[1],BLK[2]),         /* the dark inside */
   boxPart(.080,.090,.090, -.010,.217, -.100, DK[0],DK[1],DK[2]),            /* seat */
   boxPart(.070,.012,.090,  .140,.100, -.180, DK[0],DK[1],DK[2]),            /* step */
-  surf(boxPart(.020,.027,.020,-.130,.453,-.103, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1])   /* beacon */
+  surf(boxPart(.020,.027,.020,-.130,.453,-.103, CRM[0],CRM[1],CRM[2]),STEELY[0],STEELY[1]),  /* beacon */
+  /* the lamp housings: 12 cm deep, 16 cm tall, 20 cm wide, cast and dark,
+     with a little bracket under each holding it off the roof. These are part
+     of the machine - they take the sun like everything else and they are
+     there in the middle of the day, when the lamps are off. */
+  surf(boxPart(.020,.027,.033, LAMP_X,LAMP_Y,LAMP_Z1, DK[0],DK[1],DK[2]),STEELY[0],STEELY[1]),
+  surf(boxPart(.020,.027,.033, LAMP_X,LAMP_Y,LAMP_Z2, DK[0],DK[1],DK[2]),STEELY[0],STEELY[1]),
+  boxPart(.008,.012,.010, LAMP_X-.004,LAMP_Y-.018,LAMP_Z1, DK[0],DK[1],DK[2]),
+  boxPart(.008,.012,.010, LAMP_X-.004,LAMP_Y-.018,LAMP_Z2, DK[0],DK[1],DK[2])
 ],true);
 
 /* ---- the boom: one straight member that telescopes, not a jointed arm ----
@@ -3335,24 +3354,22 @@ var _c=new THREE.Color();
 /* =========================================================
    WORKING BY LIGHT
 
-   No real lamps: a few thousand point lights is not a thing a
-   browser will do. Two bright boxes on the cab that the bloom
-   pass turns into a glare, and a soft warm disc thrown on the
-   sand in front. Both appear as the sun goes down.
+   This said, for a long time: "No real lamps: a few thousand
+   point lights is not a thing a browser will do." True of
+   three.js lights and beside the point - the sand is a shader
+   of our own and so are the machines, and either can be handed
+   the nearest few lamps and work out what it is receiving.
+   They are real now. What is here is what you SEE of a lamp:
+   a housing on the body, and a lens that lights up.
    ========================================================= */
 var lampMat=new THREE.MeshBasicMaterial({color:0xfff0cc,transparent:true,opacity:0});
-/* ---- where a work lamp is ----
-   On the leading edge of the cab roof, one at each side, which is where a
-   Loadall carries them. The roof's front edge is x=.180 and its top is
-   y=.449, so these sit just inboard and just proud of it. The boxes below
-   are built from these numbers and so is the light, three hundred lines up,
-   so the thing you can see and the thing doing the lighting are the same
-   lamp. They used to be two different lamps and neither was on the machine.
-   0.03 of a machine length is 18 cm, which is a work lamp. */
-var LAMP_X=.168, LAMP_Y=.463, LAMP_Z1=-.175, LAMP_Z2=-.032;
+/* Only the lens. The housing that holds it is part of the body, built from
+   the same four numbers up where the cab is made. A lens is a thin pane
+   across the front of the housing, facing the way the beam goes - not a
+   cube, and not the whole lamp. */
 var GEO_LAMPS=mergeParts([
-  boxPart(.03,.03,.03,  LAMP_X,LAMP_Y,LAMP_Z1, 1,1,1),
-  boxPart(.03,.03,.03,  LAMP_X,LAMP_Y,LAMP_Z2, 1,1,1)
+  boxPart(.005,.020,.026, LAMP_X+.011,LAMP_Y,LAMP_Z1, 1,1,1),
+  boxPart(.005,.020,.026, LAMP_X+.011,LAMP_Y,LAMP_Z2, 1,1,1)
 ]);
 var LAMPS=new THREE.InstancedMesh(GEO_LAMPS,lampMat,MAXI);
 LAMPS.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
@@ -4163,7 +4180,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1790447359870  /* 2026-09-26 18:29 UTC */;                 /* stamped in when this file was made */
+var BUILT=1790451428811  /* 2026-09-26 19:37 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
