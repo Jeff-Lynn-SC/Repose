@@ -2363,6 +2363,67 @@ function updateSun(){
 }
 var sunDir=new THREE.Vector3(0,1,0), sunDist=300, sunTargetX=0, sunTargetZ=0;
 
+/* ---- the shadow covers what can be seen, not the whole kilometre ----
+   See patch26. Called every frame, after the camera has been placed and
+   before anything is drawn. */
+var _shF=new THREE.Vector3(), _shFwd=new THREE.Vector3(), _shR=new THREE.Vector3(),
+    _shU=new THREE.Vector3(), _shWorldUp=new THREE.Vector3(0,1,0);
+var _shSpan=-1;
+function shadowFollow(){
+  if(!sun.castShadow||!sun.shadow||!sun.shadow.camera||!machLen) return;
+  /* what the viewer is actually looking at */
+  if(man.on) _shF.set(man.tx,man.ty,man.tz); else _shF.copy(camT0);
+  var dist=camera.position.distanceTo(_shF);
+
+  /* How wide the box has to be. At this camera's 38 degrees, what is visible
+     around the point being looked at is about four fifths of the distance to
+     it; a few machine lengths of margin covers what is nearer than the
+     subject and still in frame. Clamped at the top by the pit itself, so a
+     grand shot gets exactly what it used to. */
+  var dmax=HALF*1.72, dmin=8*machLen;
+  var d=dist*0.85+3*machLen;
+  if(d>dmax) d=dmax; else if(d<dmin) d=dmin;
+  var texel=2*d/quality.shadow;
+
+  /* Snap the box to whole dots along the light's own axes. Without this the
+     box slides continuously and every shadow edge in the pit redraws itself
+     a fraction of a dot to one side each frame, which crawls. */
+  _shFwd.copy(sunDir).negate();
+  if(_shFwd.lengthSq()<1e-9) _shFwd.set(0,-1,0);
+  _shFwd.normalize();
+  _shR.crossVectors(_shWorldUp,_shFwd);
+  if(_shR.lengthSq()<1e-9) _shR.set(1,0,0);
+  _shR.normalize();
+  _shU.crossVectors(_shFwd,_shR).normalize();
+  var a=Math.round(_shF.dot(_shR)/texel)*texel;
+  var bb=Math.round(_shF.dot(_shU)/texel)*texel;
+  var cc=_shF.dot(_shFwd);
+  _shF.set(0,0,0).addScaledVector(_shR,a).addScaledVector(_shU,bb).addScaledVector(_shFwd,cc);
+
+  sunTargetX=_shF.x; sunTargetZ=_shF.z;
+  /* Far enough back that the box is entirely in front of the light, and no
+     further. This used to read Math.max(sunDist||300,d*3) - but sunDist is
+     set for the whole crowd, so a close shot got a 700 m deep box and a
+     depth bias derived from it that meant nothing. The light's distance is
+     a property of the box, like everything else here. */
+  var sd=Math.max(200, d*3);
+  sun.position.set(_shF.x+sunDir.x*sd, sunDir.y*sd, _shF.z+sunDir.z*sd);
+  sun.target.position.set(_shF.x,0,_shF.z);
+  sun.target.updateMatrixWorld();
+
+  var sc=sun.shadow.camera;
+  if(Math.abs(_shSpan-d)>0.001){
+    sc.left=-d; sc.right=d; sc.top=d; sc.bottom=-d;
+    sc.near=1; sc.far=sd*2+d*2;
+    sc.updateProjectionMatrix();
+    _shSpan=d;
+  }
+  /* both of these are a property of one dot of the shadow picture, which is
+     the only length a shadow map has. normalBias was 0.5*CS - 2.8 m. */
+  sun.shadow.normalBias=1.6*texel;
+  sun.shadow.bias=-0.9*texel/(sc.far-sc.near);
+}
+
 /* =========================================================
    THE SKY AS A LIGHT
 
@@ -2703,10 +2764,13 @@ function buildTerrain(){
   sun.target.position.set(0,0,0);
   sun.castShadow=true;
   sun.shadow.mapSize.width=quality.shadow; sun.shadow.mapSize.height=quality.shadow;
-  var d=HALF*1.72, sc=sun.shadow.camera;
-  sc.left=-d; sc.right=d; sc.top=d; sc.bottom=-d; sc.near=HALF*0.2; sc.far=HALF*4.5;
-  sc.updateProjectionMatrix();
-  sun.shadow.bias=-0.0006; sun.shadow.normalBias=0.5*CS;
+  /* the box, its near and far, its bias and its normal bias are all set by
+     shadowFollow every frame from the shot in front of you. What used to be
+     here sized the box to the whole kilometre - though measurePopulation
+     reset it to 359 m a second later, so the kilometre never ran - and set a
+     normal bias of 0.5*CS, which is 2.79 m against a 17.5 cm shadow dot.
+     See patch26. */
+  _shSpan=-1;
 }
 
 function updateTerrain(alpha){
@@ -4180,7 +4244,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1790451428811  /* 2026-09-26 19:37 UTC */;                 /* stamped in when this file was made */
+var BUILT=1790499720173  /* 2026-09-27 09:02 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -4415,15 +4479,15 @@ function measurePopulation(){
   }
   popX+=(cx-popX)*0.08; popZ+=(cz-popZ)*0.08;
   popR+=(Math.max(r,8*machLen)-popR)*0.08;
-  /* the sun only needs to cast where anyone is standing */
-  if(sun.shadow&&sun.shadow.camera){
-    var d2=Math.max(popR*1.5,30*machLen);
-    var sc=sun.shadow.camera;
-    if(Math.abs(sc.right-d2)>d2*0.15){
-      sc.left=-d2; sc.right=d2; sc.top=d2; sc.bottom=-d2; sc.updateProjectionMatrix();
-    }
-    sunTargetX=popX; sunTargetZ=popZ; sunDist=Math.max(d2*2.2,200);
-  }
+  /* This used to size the shadow box to the whole crowd and aim the light at
+     its centre, on every stats message from the worker. shadowFollow now owns
+     the box, the light's aim and the light's distance, and it sets them from
+     the shot. Left in, the two fought: shadowFollow set the box once, this
+     put it back to a hundred and eighty metres a moment later, and the bias -
+     still worked out from the box shadowFollow thought it had - was then too
+     small for the box actually in use. Which is this file's recurring fault
+     again, and this time it was mine. See patch26.
+     popX, popZ and popR are still wanted: the camera uses them. */
 }
 function boot(){
   worker.postMessage({type:"init",mix:0.5,rate:1,repose:34,scale:SCALE,
@@ -4728,6 +4792,7 @@ function frame(now){
   stepDust(dt);
   if(now-lastSunAt>2000){ lastSunAt=now; updateSun(); updateEnvironment(false); }
   driveCamera(now,dt);
+  shadowFollow();          /* after the camera is placed, before anything is drawn */
   camLabel();
   present(now);
   updateDev(now);
