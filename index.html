@@ -2506,6 +2506,8 @@ function hAt(wx,wz){
 
 /* ---- terrain ---- */
 var pos=null,nor=null,col=null,geo=null,terrain=null,pit=[];
+/* how much of the sky each point of the grid can see, 0..1. See patch27. */
+var skyV=null, skyRow=0;
 /* ---- which ground is actually moving ----
    Between two snapshots only the cells the world said had changed differ
    between hA and hB. Every other vertex comes out the same at every alpha, so
@@ -2651,6 +2653,7 @@ function buildTerrain(){
   pit.forEach(function(m){ scene.remove(m); m.geometry.dispose(); }); pit=[];
   if(terrain){ scene.remove(terrain); terrain.geometry.dispose(); terrain.material.dispose(); }
   pos=new Float32Array(N*N*3); nor=new Float32Array(N*N*3); col=new Float32Array(N*N*3);
+  skyV=new Float32Array(N*N); skyV.fill(1); skyRow=0;
   hCur=new Float32Array(N*N);
   zone=null; zoneN=0; zoneWasN=0; terrainAll=true;
   var ind=(N*N>65000)?new Uint32Array((N-1)*(N-1)*6):new Uint16Array((N-1)*(N-1)*6);
@@ -2665,6 +2668,7 @@ function buildTerrain(){
   geo.setAttribute("position",new THREE.BufferAttribute(pos,3));
   geo.setAttribute("normal",new THREE.BufferAttribute(nor,3));
   geo.setAttribute("color",new THREE.BufferAttribute(col,3));
+  geo.setAttribute("sky",new THREE.BufferAttribute(skyV,1));
   geo.setIndex(new THREE.BufferAttribute(ind,1));
   trackReset();
   var sandMat=new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.94,metalness:0});
@@ -2682,14 +2686,17 @@ function buildTerrain(){
     sh.uniforms.uTrk={value:trkTex};
     sh.uniforms.uWear={value:wearTex};
     sh.uniforms.uTrkHalf={value:HALF};
-    sh.vertexShader="varying vec3 vWPos;\nvarying vec3 vWNrm;\n"+sh.vertexShader.replace(
+    sh.vertexShader="varying vec3 vWPos;\nvarying vec3 vWNrm;\n"+
+      "attribute float sky;\nvarying float vSky;\n"+sh.vertexShader.replace(
       "#include <begin_vertex>",
       "#include <begin_vertex>\n"+
       "  vWPos=(modelMatrix*vec4(transformed,1.0)).xyz;\n"+
-      "  vWNrm=normalize(mat3(modelMatrix)*normal);");
+      "  vWNrm=normalize(mat3(modelMatrix)*normal);\n"+
+      "  vSky=sky;");
     lampUniforms(sh);
+    occUniforms(sh);
     sh.fragmentShader=
-      "varying vec3 vWPos;\nvarying vec3 vWNrm;\nuniform float uRip;\n"+LAMP_DECL+"\n"+
+      "varying vec3 vWPos;\nvarying vec3 vWNrm;\nvarying float vSky;\nuniform float uRip;\n"+LAMP_DECL+"\n"+OCC_DECL+"\n"+
       "uniform sampler2D uTrk;\nuniform sampler2D uWear;\nuniform float uTrkHalf;\n"+
       "float trackAt(vec2 w){\n"+
       "  vec2 uv=(w+uTrkHalf)/(2.0*uTrkHalf);\n"+
@@ -2730,6 +2737,43 @@ function buildTerrain(){
       "      float lum=dot(diffuseColor.rgb,vec3(0.299,0.587,0.114));\n"+
       "      diffuseColor.rgb=mix(diffuseColor.rgb,vec3(lum),0.30*tk)*(1.0-0.52*tk);\n"+
       "    }\n"+
+      "  }");
+    /* Sky, bounce and environment are all indirect: they arrive from the
+       dome, so a point that can only see half the dome gets half of them.
+       Direct sun and moon are not touched - the shadow map is their business,
+       and a spot in full sun at the bottom of a pit is fully sunlit and short
+       of sky, not the other way round. See patch27. */
+    sh.fragmentShader=sh.fragmentShader.replace(
+      "#include <lights_fragment_maps>",
+      "#include <lights_fragment_maps>\n"+
+      "  {\n"+
+      "    float sv=clamp(vSky,0.0,1.0);\n"+
+      "    /* and what the machines standing on it are covering. Not a shadow:\n"+
+      "       the sun has the shadow map. This is the sky, which at night is\n"+
+      "       the only thing there is. See patch28. */\n"+
+      "    if(uOccN>0.5){\n"+
+      "      vec3 onrm=normalize(vWNrm);\n"+
+      "      for(int oi=0;oi<8;oi++){\n"+
+      "        if(float(oi)>=uOccN) break;\n"+
+      "        vec3 ov=uOccP[oi].xyz-vWPos;\n"+
+      "        float ol2=dot(ov,ov);\n"+
+      "        float orr=uOccP[oi].w*uOccP[oi].w;\n"+
+      "        if(ol2>orr*64.0) continue;\n"+
+      "        float onl=dot(onrm,ov*inversesqrt(max(ol2,1e-6)));\n"+
+      "        if(onl<=0.0) continue;\n"+
+      "        sv*=1.0-min(onl*orr/max(ol2,orr*0.25),1.0);\n"+
+      "      }\n"+
+      "    }\n"+
+      "    /* sand is bright, and light bounces about inside a hollow, so one\n"+
+      "       bounce says it is darker than it is. Jimenez's fit, driven by the\n"+
+      "       albedo actually under this pixel. */\n"+
+      "    vec3 al=diffuseColor.rgb;\n"+
+      "    vec3 ma=2.0404*al-0.3324;\n"+
+      "    vec3 mb=-4.7951*al+0.6417;\n"+
+      "    vec3 mc=2.7552*al+0.6903;\n"+
+      "    vec3 vis=max(vec3(sv),((sv*ma+mb)*sv+mc)*sv);\n"+
+      "    irradiance*=vis;\n"+
+      "    iblIrradiance*=vis;\n"+
       "  }");
     sh.fragmentShader=sh.fragmentShader.replace(
       "#include <lights_fragment_end>",
@@ -2801,9 +2845,11 @@ function updateTerrain(alpha){
     nor[c]=nx*il; nor[c+1]=il; nor[c+2]=nz*il;
     var t=hv/top; if(t>1)t=1;
     var sd=1-(slope<1.4?slope:1.4)*0.26;
-    var lap=(hl+hr+hd+hu)*0.25-hv;
-    var ao=1-Math.max(0,Math.min(0.32,lap/CS*0.6));
-    var k=sd*ao*((hv%band)<band*0.06?0.93:1.0);
+    /* There was a fake occlusion here, from a one-cell Laplacian, baked into
+       the colour. It could see 5.6 m and it darkened direct sunlight along
+       with everything else. Real sky visibility now does the job, in the
+       light rather than in the paint. See patch27. */
+    var k=sd*((hv%band)<band*0.06?0.93:1.0);
     var r,g,b,f;
     if(hv<0.10*CS){ r=C_ROCK[0]; g=C_ROCK[1]; b=C_ROCK[2]; }
     else{
@@ -2830,6 +2876,49 @@ function updateTerrain(alpha){
   }
   aP.needsUpdate=true; aN.needsUpdate=true; aC.needsUpdate=true;
   terrainAll=false;
+}
+
+/* ---------------------------------------------------------
+   HOW MUCH SKY THIS POINT CAN SEE
+
+   Eight directions; along each, march out and keep the steepest horizon.
+   A horizon at angle e hides everything below it, so the cosine-weighted
+   fraction of that slice still open is cos^2(e) = 1/(1+t*t) with t the
+   tangent - which is exactly what marching a heightfield hands you, so
+   there is no trigonometry here at all.
+
+   Six rows a frame, wrapping: the whole field every thirty frames. It has
+   to be the whole field, not the cells that changed, because digging one
+   hole changes what a point two hundred metres away can see.
+   --------------------------------------------------------- */
+var SKY_DIR=[1,0, 0,1, -1,0, 0,-1, 0.7071,0.7071, -0.7071,0.7071,
+             0.7071,-0.7071, -0.7071,-0.7071];
+var SKY_STEP=[1,2,3,5,7,10,14,19,25,33];        /* cells: out to about 184 m */
+var SKY_ROWS=6;
+function skyPass(){
+  if(!skyV||!hCur||!geo||!geo.attributes.sky) return;
+  var z0=skyRow, z1=z0+SKY_ROWS; if(z1>N) z1=N;
+  var z,x,k,j,d,sx,sz,ix,iz,t,hm,vis,i,h0;
+  for(z=z0;z<z1;z++) for(x=0;x<N;x++){
+    i=z*N+x; h0=hCur[i]; if(h0<0) h0=0;
+    vis=0;
+    for(k=0;k<8;k++){
+      sx=SKY_DIR[k*2]; sz=SKY_DIR[k*2+1]; hm=0;
+      for(j=0;j<10;j++){
+        d=SKY_STEP[j];
+        ix=(x+sx*d)|0; if(ix<0||ix>=N) break;
+        iz=(z+sz*d)|0; if(iz<0||iz>=N) break;
+        t=(hCur[iz*N+ix]-h0)/(d*CS);
+        if(t>hm) hm=t;
+      }
+      vis+=1/(1+hm*hm);
+    }
+    skyV[i]=vis*0.125;
+  }
+  var a=geo.attributes.sky;
+  a.updateRange.offset=z0*N; a.updateRange.count=(z1-z0)*N;
+  a.needsUpdate=true;
+  skyRow=(z1>=N)?0:z1;
 }
 
 /* ---- machines, drawn from the interpolated snapshot ---- */
@@ -2874,6 +2963,7 @@ function drawMachines(alpha){
   drawMachines._t=performance.now();
   if(!agA||!agB) return;
   lampReset();
+  occReset();
   var n=Math.min(nA,nB), i;
   for(i=0;i<n;i++){
     var p=i*12;          /* the worker packs twelve floats per machine */
@@ -2950,6 +3040,14 @@ function drawMachines(alpha){
        in mid-air. The simulation hinges it at L_BASE; BL is this side's copy
        of the same number, because the two live in different scripts. */
     var mK=joint(_mB,mS,BL,0,0,bk,0);               RIG.bucket.setMatrixAt(i,mK);
+    /* the body, and the bucket, as two spheres of sky this machine is taking
+       off the sand around it. The body sits about 1.7 m up and is about 1.8 m
+       across; the bucket is smaller and much lower, which is why it is worth
+       having separately - it is the one resting on the ground. See patch28. */
+    _occPos.set(0,0.28,0).applyMatrix4(mU);
+    occOffer(0.30*machLen,_occPos.distanceToSquared(camera.position));
+    _occPos.setFromMatrixPosition(mK);
+    occOffer(0.16*machLen,_occPos.distanceToSquared(camera.position));
     _mA.copy(mK);
     /* The load has to be seen to drain. This used to hold the sand at a
        third of its height however little was left, and then make it vanish
@@ -3012,6 +3110,7 @@ function drawMachines(alpha){
     }
   }
   lampFlush();
+  occFlush();
   if(articulate){
     for(var k=0;k<RIGLIST.length;k++){
       var m=RIGLIST[k], cnt=(m===RIG.wheel)?n*4:n; m.count=cnt;
@@ -3337,6 +3436,46 @@ var LAMP_APPLY=[
  "    reflectedLight.directDiffuse+=irr*diffuseColor.rgb*RECIPROCAL_PI;",
  "  }",
  "}"].join("\n");
+/* ---- what a machine does to the sky over a patch of sand ----
+   Two spheres a machine: the body and the bucket. What is computed is the
+   fraction of this point's sky that the sphere covers - nl*r^2/d^2, the solid
+   angle weighted by how squarely it sits against the surface's hemisphere.
+   Straight under the belly it saturates at one, which is correct: from there
+   there is no sky. See patch28. */
+var OCC_MAX=8;
+var OCC_DECL=[
+ "uniform vec4 uOccP[8];",       /* xyz where it is, w how big */
+ "uniform float uOccN;"
+].join("\n");
+var OCCU={ uOccP:{value:new Float32Array(32)}, uOccN:{value:0} };
+/* How near the camera a machine has to be before it is worth asking the sand
+   about it at all. A machine shades the ground within about eight of its own
+   radii - some fourteen metres - and past twelve machine lengths that patch
+   is a smudge. Measured: unguarded, the loop cost 9% of the frame, nearly all
+   of it on machines too far away to be seen shading anything. A ball drawn
+   round all eight was tried first and was no use, because four machines
+   scattered over a square kilometre make a ball that covers the whole view. */
+var OCC_NEAR=12;
+function occUniforms(sh){ for(var k in OCCU) sh.uniforms[k]=OCCU[k]; }
+var _occPos=new THREE.Vector3();
+var _occD2=new Float64Array(8);
+var _occN=0;
+function occReset(){ _occN=0; }
+function occOffer(r,d2){
+  var P=OCCU.uOccP.value, i, j;
+  var far=OCC_NEAR*machLen; if(d2>far*far) return;    /* too far to be seen shading anything */
+  if(_occN>=8 && d2>=_occD2[7]) return;
+  i=(_occN<8)?_occN++:7;
+  while(i>0 && _occD2[i-1]>d2){
+    _occD2[i]=_occD2[i-1];
+    for(j=0;j<4;j++) P[i*4+j]=P[(i-1)*4+j];
+    i--;
+  }
+  _occD2[i]=d2;
+  P[i*4]=_occPos.x; P[i*4+1]=_occPos.y; P[i*4+2]=_occPos.z; P[i*4+3]=r;
+}
+function occFlush(){ OCCU.uOccN.value=_occN; }
+
 var LAMPU={ uLampP:{value:new Float32Array(32)}, uLampD:{value:new Float32Array(32)},
             uLampC:{value:new THREE.Vector3(0,0,0)},
             uLampCone:{value:new THREE.Vector2(0.42,0.80)},
@@ -4244,7 +4383,7 @@ function startWorldLink(){
    then counts from there for good, and the saved world stops being thrown
    away with each build.
    ======================================================= */
-var BUILT=1790499720173  /* 2026-09-27 09:02 UTC */;                 /* stamped in when this file was made */
+var BUILT=1790530787587  /* 2026-09-27 17:39 UTC */;                 /* stamped in when this file was made */
 var LAUNCH=null;                     /* e.g. Date.UTC(2026,9,5) for 5 Oct 2026 */
 
 var EPOCH   = (LAUNCH!==null) ? LAUNCH : BUILT;
@@ -4787,6 +4926,7 @@ function frame(now){
     var span=Math.max(16,(tickEst&&verB>verA)?(verB-verA)*tickEst:(tB-tA));
     var alpha=(now-tB)/span; alpha=alpha<0?0:(alpha>1?1:alpha);
     updateTerrain(alpha);
+    skyPass();
     drawMachines(alpha);
   }
   stepDust(dt);
